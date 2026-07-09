@@ -53,9 +53,7 @@ const Params = Type.Object({
       description: "Output format. csv/json/tsv for machine-readable data",
     }),
   ),
-  file: Type.Optional(
-    Type.String({ description: "Journal file relative to ~/accountant24 (default: ledger/main.journal)" }),
-  ),
+  file: Type.Optional(Type.String({ description: "Journal file relative to the ledger dir (default: main.journal)" })),
 });
 
 export const queryTool: ToolDefinition<typeof Params, QueryLedgerResult> = {

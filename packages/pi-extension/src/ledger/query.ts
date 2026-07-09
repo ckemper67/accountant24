@@ -1,4 +1,4 @@
-import { ACCOUNTANT24_WORKSPACE } from "../config";
+import { LEDGER_DIR } from "../config";
 import { runHledger } from "./hledger";
 import { resolveSafePath } from "./paths";
 
@@ -19,8 +19,10 @@ export interface QueryLedgerResult {
 }
 
 export async function queryLedger(params: any, signal?: AbortSignal): Promise<QueryLedgerResult> {
-  const file = params.file ?? "ledger/main.journal";
-  const resolved = resolveSafePath(file, ACCOUNTANT24_WORKSPACE);
+  // Confine reads to the ledger dir (not the workspace root) so a prompt-injected
+  // `file` can't reach auth.json / models.json, which live above ledger/.
+  const file = params.file ?? "main.journal";
+  const resolved = resolveSafePath(file, LEDGER_DIR);
   const args = buildQueryArgs(params, resolved);
   const raw = await runHledger(args, { signal });
   const command = ["hledger", ...args].join(" ");
