@@ -10,6 +10,8 @@ import accountsJournal from "./template/ledger/accounts.journal" with { type: "t
 import commoditiesJournal from "./template/ledger/commodities.journal" with { type: "text" };
 // @ts-expect-error
 import mainJournal from "./template/ledger/main.journal" with { type: "text" };
+// @ts-expect-error
+import pricesJournal from "./template/ledger/prices.journal" with { type: "text" };
 // Text imports so esbuild inlines template files into the bundle (the text
 // loaders in scripts/bundle-extension.ts). TS lib doesn't ship types for text
 // import attributes, and for .json files TS treats the import as JSON regardless
@@ -23,6 +25,7 @@ const TEMPLATE_FILES: Record<string, string> = {
   ".gitignore": gitignore,
   "ledger/accounts.journal": accountsJournal,
   "ledger/commodities.journal": commoditiesJournal,
+  "ledger/prices.journal": pricesJournal,
   "ledger/main.journal": mainJournal,
 };
 
