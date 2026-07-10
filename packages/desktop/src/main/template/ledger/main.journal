@@ -1,4 +1,5 @@
 ; Accountant24
 
 include commodities.journal
+include prices.journal
 include accounts.journal
