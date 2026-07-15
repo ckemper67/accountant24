@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseCsv } from "../csv";
+import { parseCsv, parseCsvWithMeta } from "../csv";
 
 describe("parseCsv()", () => {
   describe("header auto-detection", () => {
@@ -38,6 +38,55 @@ describe("parseCsv()", () => {
       const rows = parseCsv(csv);
       expect(rows[0].payee).toBe("");
       expect(rows[0].currency).toBe("");
+    });
+  });
+
+  describe("metadata preamble before the header", () => {
+    const withPreamble = [
+      "Account Statement",
+      "Account: 1234567890",
+      "Period: 2025-01-01 to 2025-01-31",
+      "Date,Amount,Payee",
+      "2025-01-15,-45.00,Whole Foods",
+      "2025-01-16,2000.00,ACME Corp",
+    ].join("\n");
+
+    test("should skip metadata rows and detect the real header automatically", () => {
+      const rows = parseCsv(withPreamble);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].date).toBe("2025-01-15");
+      expect(rows[0].payee).toBe("Whole Foods");
+    });
+
+    test("should not treat preamble lines as data rows", () => {
+      const rows = parseCsv(withPreamble);
+      expect(rows.some((r) => r.date.includes("Account"))).toBe(false);
+    });
+
+    test("should honor an explicit skip_rows override", () => {
+      const rows = parseCsv(withPreamble, undefined, 3);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].date).toBe("2025-01-15");
+    });
+  });
+
+  describe("parseCsvWithMeta() detection metadata", () => {
+    test("should report the skipped preamble, header row index, and detected columns", () => {
+      const csv = ["Bank Export", "Generated 2025-02-01", "Date,Amount,Payee", "2025-01-15,-45.00,Whole Foods"].join(
+        "\n",
+      );
+      const meta = parseCsvWithMeta(csv);
+      expect(meta.headerRowIndex).toBe(2);
+      expect(meta.preamble).toEqual(["Bank Export", "Generated 2025-02-01"]);
+      expect(meta.headers).toEqual(["Date", "Amount", "Payee"]);
+      expect(meta.rows[0].payee).toBe("Whole Foods");
+    });
+
+    test("should report zero preamble for a plain single-header CSV", () => {
+      const csv = ["Date,Amount", "2025-01-15,-45.00"].join("\n");
+      const meta = parseCsvWithMeta(csv);
+      expect(meta.headerRowIndex).toBe(0);
+      expect(meta.preamble).toEqual([]);
     });
   });
 

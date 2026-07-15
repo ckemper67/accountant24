@@ -9,6 +9,7 @@ import {
   bulkEditTransactionsTool,
   commitAndPushTool,
   extractTextTool,
+  importTransactionsFromRowsTool,
   importTransactionsTool,
   queryTool,
   validateTool,
@@ -27,6 +28,7 @@ export function createAccountantExtension(pi: ExtensionAPI): void {
   pi.registerTool(addTransactionsTool);
   pi.registerTool(bulkEditTransactionsTool);
   pi.registerTool(importTransactionsTool);
+  pi.registerTool(importTransactionsFromRowsTool);
   pi.registerTool(commitAndPushTool);
   pi.registerTool(extractTextTool);
   pi.registerTool(validateTool);

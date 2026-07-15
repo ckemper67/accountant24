@@ -6,7 +6,7 @@
 // import_id is already present is skipped. This dedups against transactions previously
 // written by the importer (which carry the import_id tag).
 //
-// import_id format: "csv:<sha256-hex>"
+// import_id format: "<source>:<hash-hex>" (e.g. "csv:1a2b3c...", "pdf:...")
 //
 // The hash covers: account | date | normalized-amount | normalized-description | ordinal.
 //
@@ -20,12 +20,14 @@
 //   because the SET of (fingerprint, ordinal) hashes is order-independent for a fixed
 //   multiset. No separate fingerprint-count pass is needed.
 
-import { createHash } from "node:crypto";
 import { ACCOUNTANT24_HOME, LEDGER_DIR } from "../config";
 import { runHledger } from "../ledger/hledger";
 import { resolveSafePath } from "../ledger/paths";
 
 // ── Types ────────────────────────────────────────────────────────────
+
+/** Where a batch of rows came from -- namespaces the import_id so sources never collide. */
+export type ImportSource = "csv" | "pdf";
 
 export interface DedupRow {
   date: string; // normalized ISO YYYY-MM-DD
@@ -53,11 +55,31 @@ function baseKey(account: string, row: DedupRow): string {
   return `${account}|${row.date}|${amountStr}|${normalizeDesc(row.description)}`;
 }
 
+// FNV-1a 64-bit constants.
+const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const U64_MASK = 0xffffffffffffffffn;
+
+/**
+ * FNV-1a, 64-bit: a fast, simple, well-distributed non-cryptographic string hash. The
+ * import_id is only a dedup fingerprint over non-adversarial bank data, so cryptographic
+ * strength is unnecessary. 64 bits keeps the collision probability negligible even for a
+ * ledger with hundreds of thousands of transactions (a collision would wrongly drop a real
+ * row). Returns a hex string.
+ */
+function fnv1a64(str: string): string {
+  let hash = FNV_OFFSET_BASIS;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= BigInt(str.charCodeAt(i));
+    hash = (hash * FNV_PRIME) & U64_MASK;
+  }
+  return hash.toString(16);
+}
+
 /** Compute the import_id for a row at a given ordinal position. */
-export function computeImportId(account: string, row: DedupRow, ordinal: number): string {
+export function computeImportId(account: string, row: DedupRow, ordinal: number, source: ImportSource = "csv"): string {
   const key = `${baseKey(account, row)}|${ordinal}`;
-  const hash = createHash("sha256").update(key).digest("hex").slice(0, 16);
-  return `csv:${hash}`;
+  return `${source}:${fnv1a64(key)}`;
 }
 
 // ── Ledger read ──────────────────────────────────────────────────────
@@ -113,7 +135,12 @@ export interface ReconcileOutput {
  * fingerprint, this alone gives correct multiset idempotency on re-import (see module
  * header): the first K duplicates match the K existing copies and only the surplus is new.
  */
-export function reconcile(rows: DedupRow[], account: string, existingIds: Set<string>): ReconcileOutput[] {
+export function reconcile(
+  rows: DedupRow[],
+  account: string,
+  existingIds: Set<string>,
+  source: ImportSource = "csv",
+): ReconcileOutput[] {
   const fileOrdinalMap = new Map<string, number>();
 
   return rows.map((row) => {
@@ -121,7 +148,7 @@ export function reconcile(rows: DedupRow[], account: string, existingIds: Set<st
     const ordinal = fileOrdinalMap.get(key) ?? 0;
     fileOrdinalMap.set(key, ordinal + 1);
 
-    const importId = computeImportId(account, row, ordinal);
+    const importId = computeImportId(account, row, ordinal, source);
     return { importId, isNew: !existingIds.has(importId) };
   });
 }

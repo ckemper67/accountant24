@@ -20,12 +20,22 @@ export interface ColumnMap {
   currency?: string;
 }
 
-export interface CsvRow {
+export interface StatementRow {
   date: string; // raw date string (not yet normalized)
   amount: string; // raw amount string (not yet parsed); sign: positive = inflow
   description: string;
   payee: string;
   currency: string;
+}
+
+export interface ParsedCsv {
+  rows: StatementRow[];
+  /** The detected header fields. */
+  headers: string[];
+  /** 0-based index (among non-empty lines) of the header -- also the preamble line count. */
+  headerRowIndex: number;
+  /** The raw metadata lines skipped before the header, so a caller can validate detection. */
+  preamble: string[];
 }
 
 // ── Header matching ────────────────────────────────────────────────
@@ -91,27 +101,68 @@ function resolveColumnIndex(headers: string[], userKey: string | undefined, cand
   return matchHeader(headers, candidates);
 }
 
+// ── Header detection ───────────────────────────────────────────────
+
+// How many leading lines to scan for the real header (bank exports often prepend
+// account/metadata rows before it).
+const HEADER_SCAN_LIMIT = 25;
+
+/** Non-throwing column resolve, used to score candidate header lines. */
+function tryResolveIndex(headers: string[], userKey: string | undefined, candidates: string[]): number {
+  if (userKey !== undefined) {
+    const idx = matchHeader(headers, [userKey]);
+    if (idx !== -1) return idx;
+    const asIndex = Number.parseInt(userKey, 10);
+    if (!Number.isNaN(asIndex) && asIndex >= 0 && asIndex < headers.length) return asIndex;
+    return -1;
+  }
+  return matchHeader(headers, candidates);
+}
+
+/** A line is the header if it resolves a date column plus at least one amount-ish column. */
+function looksLikeHeader(headers: string[], columnMap?: ColumnMap): boolean {
+  if (tryResolveIndex(headers, columnMap?.date, DATE_HEADERS) === -1) return false;
+  const amount = tryResolveIndex(headers, columnMap?.amount, AMOUNT_HEADERS);
+  const debit = tryResolveIndex(headers, columnMap?.debit, DEBIT_HEADERS);
+  const credit = tryResolveIndex(headers, columnMap?.credit, CREDIT_HEADERS);
+  return amount !== -1 || debit !== -1 || credit !== -1;
+}
+
+/** Find the header line, skipping any leading metadata/preamble rows. */
+function findHeaderRow(lines: string[], columnMap?: ColumnMap): number {
+  const limit = Math.min(lines.length, HEADER_SCAN_LIMIT);
+  for (let i = 0; i < limit; i++) {
+    if (looksLikeHeader(parseCSVLine(lines[i]), columnMap)) return i;
+  }
+  return 0; // fall back to the first line; downstream resolution throws a helpful error
+}
+
 // ── Public ───────────────────────────────────────────────────────────
 
 /**
- * Parse a CSV text into an array of structured rows.
+ * Parse a CSV text into structured rows (raw strings; amounts and dates not yet normalized),
+ * plus header-detection metadata so a caller can validate that the right header was found.
  *
  * @param text      - The decoded CSV text (no BOM).
  * @param columnMap - Optional override for column header names.
- * @returns         Array of CsvRow (raw strings; amounts and dates not yet normalized).
+ * @param skipRows  - Optional number of leading (non-empty) lines to skip before the header;
+ *                    omit to auto-detect the header row past any metadata preamble.
  * @throws          If required columns (date + at least one amount column) cannot be found.
  */
-export function parseCsv(text: string, columnMap?: ColumnMap): CsvRow[] {
+export function parseCsvWithMeta(text: string, columnMap?: ColumnMap, skipRows?: number): ParsedCsv {
   // Split into lines, strip carriage returns, drop blank lines.
   const lines = text
     .split("\n")
     .map((l) => l.replace(/\r$/, ""))
     .filter((l) => l.trim() !== "");
 
-  if (lines.length === 0) return [];
+  if (lines.length === 0) return { rows: [], headers: [], headerRowIndex: 0, preamble: [] };
 
-  // First non-blank line is the header.
-  const headers = parseCSVLine(lines[0]);
+  // Locate the header row: an explicit skip wins; otherwise auto-detect past any preamble.
+  const headerRow =
+    skipRows != null ? Math.min(Math.max(skipRows, 0), lines.length - 1) : findHeaderRow(lines, columnMap);
+  const headers = parseCSVLine(lines[headerRow]);
+  const preamble = lines.slice(0, headerRow);
 
   // Resolve column indices.
   const dateCol = resolveColumnIndex(headers, columnMap?.date, DATE_HEADERS);
@@ -136,9 +187,9 @@ export function parseCsv(text: string, columnMap?: ColumnMap): CsvRow[] {
     );
   }
 
-  const rows: CsvRow[] = [];
+  const rows: StatementRow[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
+  for (let i = headerRow + 1; i < lines.length; i++) {
     const fields = parseCSVLine(lines[i]);
 
     const dateRaw = (fields[dateCol] ?? "").trim();
@@ -174,5 +225,10 @@ export function parseCsv(text: string, columnMap?: ColumnMap): CsvRow[] {
     rows.push({ date: dateRaw, amount: amountRaw, description, payee, currency });
   }
 
-  return rows;
+  return { rows, headers, headerRowIndex: headerRow, preamble };
+}
+
+/** Convenience wrapper returning only the rows (see parseCsvWithMeta for detection metadata). */
+export function parseCsv(text: string, columnMap?: ColumnMap, skipRows?: number): StatementRow[] {
+  return parseCsvWithMeta(text, columnMap, skipRows).rows;
 }
