@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { generateDiffString } from "@earendil-works/pi-coding-agent";
 import { ACCOUNTANT24_WORKSPACE, LEDGER_DIR } from "../config";
@@ -50,9 +50,13 @@ interface FormattedEntry {
 
 // ── Public ──────────────────────────────────────────────────────────
 
-// Serialization is handled at the tool layer: the add_transactions tool is registered
-// executionMode "sequential", so pi never runs it concurrently with another ledger-writing
-// tool. That keeps concurrent writes and the ledger-wide `hledger check` from interleaving.
+/**
+ * Add transactions to the ledger. Serialization is handled at the tool layer: the
+ * add_transactions and import_transactions tools are registered executionMode
+ * "sequential", so pi never runs a ledger writer concurrently with another. That keeps
+ * concurrent writes and the ledger-wide `hledger check` from interleaving without
+ * needing an in-code lock.
+ */
 export async function addTransactions(
   paramsList: AddTransactionParams[],
   signal?: AbortSignal,
@@ -95,13 +99,57 @@ async function persistFormatted(
   signal?: AbortSignal,
 ): Promise<AddTransactionsResult> {
   const byFile = groupByFile(formatted);
-  const fileContents = writeMonthlyFiles(byFile);
-  updateMainJournal(byFile);
-  declareMissingCommodities(currencies);
-  await validateLedger(formatted, signal);
-  const diffs = buildDiffs(byFile, fileContents);
-  const transactions = formatted.map((f) => ({ transactionText: f.text, fullFilePath: f.fullFilePath }));
-  return { transactions, ledgerIsValid: true, diffs };
+
+  // Snapshot every file we may touch so a validation failure (or any other error mid-write)
+  // leaves the ledger byte-for-byte unchanged. This matters most for bulk imports, where a
+  // single bad row would otherwise persist hundreds of already-written transactions.
+  const snapshot = snapshotTargets(byFile);
+  try {
+    const fileContents = writeMonthlyFiles(byFile);
+    updateMainJournal(byFile);
+    declareMissingCommodities(currencies);
+    await validateLedger(formatted, signal);
+    const diffs = buildDiffs(byFile, fileContents);
+    const transactions = formatted.map((f) => ({ transactionText: f.text, fullFilePath: f.fullFilePath }));
+    return { transactions, ledgerIsValid: true, diffs };
+  } catch (e) {
+    restoreTargets(snapshot);
+    throw e;
+  }
+}
+
+// ── Atomicity: snapshot/restore ────────────────────────────────────
+
+interface FileSnapshot {
+  path: string;
+  existed: boolean;
+  content: string;
+}
+
+/** Capture the pre-write contents of every file addTransactions may modify. */
+function snapshotTargets(byFile: Map<string, FormattedEntry[]>): FileSnapshot[] {
+  const paths = new Set<string>();
+  for (const entries of byFile.values()) paths.add(entries[0].fullFilePath);
+  paths.add(resolveSafePath("main.journal", LEDGER_DIR));
+  paths.add(resolveSafePath("commodities.journal", LEDGER_DIR));
+
+  const snapshot: FileSnapshot[] = [];
+  for (const path of paths) {
+    const existed = existsSync(path);
+    snapshot.push({ path, existed, content: existed ? readFileSync(path, "utf-8") : "" });
+  }
+  return snapshot;
+}
+
+/** Restore files to their snapshotted state: rewrite originals, delete ones we created. */
+function restoreTargets(snapshot: FileSnapshot[]): void {
+  for (const { path, existed, content } of snapshot) {
+    if (existed) {
+      writeFileSync(path, content);
+    } else if (existsSync(path)) {
+      unlinkSync(path);
+    }
+  }
 }
 
 // ── Pipeline steps ─────────────────────────────────────────────────
@@ -227,7 +275,7 @@ async function validateLedger(formatted: FormattedEntry[], signal?: AbortSignal)
   } catch (e) {
     if (e instanceof HledgerCommandError) {
       const filePaths = [...new Set(formatted.map((f) => f.fullFilePath))].join(", ");
-      throw new Error(`Transactions saved to ${filePaths} but the ledger has errors:\n\n${e.stderr}`);
+      throw new Error(`Ledger validation failed for ${filePaths}; changes were rolled back:\n\n${e.stderr}`);
     }
     throw e;
   }

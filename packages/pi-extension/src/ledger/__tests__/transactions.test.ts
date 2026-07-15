@@ -713,6 +713,20 @@ describe("addTransaction() hledger validation", () => {
     const result = await addTransaction(basicParams);
     expect(result.ledgerIsValid).toBe(true);
   });
+
+  test("should roll back all written files when hledger validation fails", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "; original\n");
+    vi.mocked(spawnText).mockResolvedValue(makeMockProc(1, "", "unbalanced transaction"));
+
+    await expect(addTransaction(basicParams)).rejects.toThrow(/rolled back/);
+
+    // The monthly file that would have been created is removed.
+    expect(existsSync(join(LEDGER, "2026", "03.journal"))).toBe(false);
+    // The pre-existing main.journal is restored byte-for-byte (no include appended).
+    expect(readFileSync(join(LEDGER, "main.journal"), "utf-8")).toBe("; original\n");
+    // The commodities file that would have been created does not linger.
+    expect(existsSync(join(LEDGER, "commodities.journal"))).toBe(false);
+  });
 });
 
 // ── Batch: addTransactions() ───────────────────────────────────────
