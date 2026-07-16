@@ -5,7 +5,7 @@ vi.mock("../../spawn");
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 const BASE = mkdtempSync(join(tmpdir(), "accountant24-ledger-"));
 vi.mock("../../config.js", () => ({
@@ -132,18 +132,29 @@ describe("queryLedger()", () => {
       vi.mocked(spawnText).mockResolvedValue(makeMockProc(0, ""));
     });
 
+    // Extract the journal path hledger is pointed at (the token after `-f`).
+    function journalArg(command: string): string {
+      const parts = command.split(" ");
+      return parts[parts.indexOf("-f") + 1];
+    }
+
     test("should resolve a bare `file` inside the ledger dir, not the workspace root", async () => {
       // auth.json / models.json sit in the workspace root, one level above the
       // ledger dir. A prompt-injected `file: "auth.json"` must resolve to
       // <workspace>/ledger/auth.json (harmless), never the real <workspace>/auth.json.
       const result = await queryLedger({ report: "bal", file: "auth.json" });
-      expect(result.command).toContain(join(BASE, "ledger", "auth.json"));
-      expect(result.command).not.toContain(`-f ${join(BASE, "auth.json")}`);
+      const journal = journalArg(result.command);
+      // Must stay under the ledger dir prefix — a revert to ACCOUNTANT24_HOME as
+      // the base would resolve to <workspace>/auth.json and fail both assertions.
+      expect(journal.startsWith(join(BASE, "ledger") + sep)).toBe(true);
+      expect(journal).toBe(join(BASE, "ledger", "auth.json"));
     });
 
     test("should resolve the default journal inside the ledger dir", async () => {
       const result = await queryLedger({ report: "bal" });
-      expect(result.command).toContain(join(BASE, "ledger", "main.journal"));
+      const journal = journalArg(result.command);
+      expect(journal.startsWith(join(BASE, "ledger") + sep)).toBe(true);
+      expect(journal).toBe(join(BASE, "ledger", "main.journal"));
     });
   });
 });
