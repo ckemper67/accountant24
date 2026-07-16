@@ -130,3 +130,25 @@ describe("fetchYahooDailyCloses()", () => {
     await expect(fetchYahooDailyCloses("AAPL", "2026-01-01", "2026-01-02")).rejects.toBeInstanceOf(YahooFetchError);
   });
 });
+
+describe("fetchYahooDailyCloses() input validation", () => {
+  test("should reject a malformed start date before calling fetch", async () => {
+    const fn = mockFetch(chartBody({}));
+    await expect(fetchYahooDailyCloses("AAPL", "01-01-2026", "2026-01-02")).rejects.toThrow("Invalid date: 01-01-2026");
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchYahooDailyCloses() missing metadata", () => {
+  test("should default currency to USD and gmtoffset to 0 when meta is absent", async () => {
+    mockFetch({
+      chart: {
+        error: null,
+        result: [{ timestamp: [], indicators: { quote: [{ close: [] }] } }],
+      },
+    });
+    const result = await fetchYahooDailyCloses("AAPL", "2026-01-01", "2026-01-02");
+    expect(result.currency).toBe("USD");
+    expect(result.points).toEqual([]);
+  });
+});
