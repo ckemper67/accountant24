@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { YahooFetchError } from "../../ledger/prices/yahoo";
 import { spawnText } from "../../spawn";
 
 vi.mock("../../spawn");
@@ -61,7 +62,8 @@ beforeEach(() => {
   vi.mocked(spawnText).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
   mkdirSync(LEDGER, { recursive: true });
   writeFileSync(join(LEDGER, "main.journal"), "include commodities.journal\ninclude prices.journal\n");
-  writeFileSync(join(LEDGER, "commodities.journal"), "; Commodity declarations\n");
+  // fetch_prices only prices commodities already declared in the ledger.
+  writeFileSync(join(LEDGER, "commodities.journal"), "; Commodity declarations\ncommodity AAPL\ncommodity VTSAX\n");
   writeFileSync(join(LEDGER, "prices.journal"), "; Market price history\n");
 });
 
@@ -89,18 +91,26 @@ describe("fetchPricesTool.execute()", () => {
     expect(firstText(result.content)).toContain("Added 2 price(s) for AAPL, VTSAX");
   });
 
-  test("should default the end date to today when omitted", async () => {
-    const fn = mockFetchBySymbol({ AAPL: bodyFor(150) });
+  test("should default the end date to today in the local timezone when omitted", async () => {
+    // Pin "now" to just after local midnight. In any timezone west of UTC this
+    // instant is still the *previous* calendar day in UTC, so a UTC-based
+    // default (toISOString) would pick the wrong day; the local date must win.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 0, 15, 0, 30, 0));
+      const fn = mockFetchBySymbol({ AAPL: bodyFor(150) });
 
-    await run({ prices: [{ commodity: "AAPL", symbol: "AAPL" }], start: "2026-01-01" });
+      await run({ prices: [{ commodity: "AAPL", symbol: "AAPL" }], start: "2026-01-01" });
 
-    const url = new URL(fn.mock.calls[0][0]);
-    const period2 = Number(url.searchParams.get("period2"));
-    const [ty, tm, td] = new Date().toISOString().slice(0, 10).split("-").map(Number);
-    // period2 is (end + 1 day) at 00:00 UTC; end defaults to today. Month is
-    // 1-based here, so pass tm-1 to Date.UTC.
-    const expected = Math.floor(Date.UTC(ty, tm - 1, td) / 1000) + 86400;
-    expect(period2).toBe(expected);
+      const url = new URL(fn.mock.calls[0][0]);
+      const period2 = Number(url.searchParams.get("period2"));
+      // end defaults to the local date 2026-01-15; period2 is (end + 1 day) at
+      // 00:00 UTC.
+      const expected = Math.floor(Date.UTC(2026, 0, 15) / 1000) + 86400;
+      expect(period2).toBe(expected);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("should reject a malformed start date before any fetch", async () => {
@@ -120,10 +130,12 @@ describe("fetchPricesTool.execute()", () => {
 
   test("should propagate a Yahoo fetch error", async () => {
     mockFetchBySymbol({
-      NOPE: { chart: { result: null, error: { code: "Not Found", description: "delisted" } } },
+      AAPL: { chart: { result: null, error: { code: "Not Found", description: "delisted" } } },
     });
+    // Fetch fails before any write; assert it surfaces as a YahooFetchError so
+    // this test can't pass for the wrong reason (e.g. an unrelated throw).
     await expect(
-      run({ prices: [{ commodity: "NOPE", symbol: "NOPE" }], start: "2026-01-01", end: "2026-01-02" }),
-    ).rejects.toThrow("delisted");
+      run({ prices: [{ commodity: "AAPL", symbol: "AAPL" }], start: "2026-01-01", end: "2026-01-02" }),
+    ).rejects.toThrow(YahooFetchError);
   });
 });

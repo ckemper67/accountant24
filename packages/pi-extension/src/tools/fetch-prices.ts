@@ -18,6 +18,20 @@ const Params = Type.Object({
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Today's calendar date (YYYY-MM-DD) in the local timezone. Uses the local
+ * date parts rather than `toISOString()` (which is UTC) so the default `end`
+ * matches the user's actual current day instead of drifting a day near
+ * midnight in non-UTC timezones.
+ */
+function todayLocal(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 const LABEL = "Fetch Prices";
 
 export const fetchPricesTool: ToolDefinition<typeof Params, WritePricesResult> = {
@@ -34,7 +48,7 @@ export const fetchPricesTool: ToolDefinition<typeof Params, WritePricesResult> =
 
   async execute(_id, params, signal) {
     const start = params.start;
-    const end = params.end ?? new Date().toISOString().slice(0, 10);
+    const end = params.end ?? todayLocal();
     if (!DATE_RE.test(start)) throw new Error(`Invalid start date: ${start}. Expected YYYY-MM-DD.`);
     if (!DATE_RE.test(end)) throw new Error(`Invalid end date: ${end}. Expected YYYY-MM-DD.`);
     if (end < start) throw new Error(`end (${end}) is before start (${start}).`);

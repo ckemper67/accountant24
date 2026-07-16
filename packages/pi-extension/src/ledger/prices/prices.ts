@@ -42,17 +42,80 @@ function formatPrice(n: number): string {
   return `${intPart}.${frac.padEnd(2, "0")}`;
 }
 
-/** Collect existing `date\tcommodity` keys from a prices.journal body. */
+/** Strip a single pair of surrounding double quotes, if present. */
+function bareName(symbol: string): string {
+  const m = /^"(.*)"$/.exec(symbol);
+  return m ? m[1] : symbol;
+}
+
+/**
+ * Collect existing `date\tcommodity` keys from a prices.journal body. The
+ * commodity is normalized to its unquoted form so that `"FDRXX"` and `FDRXX`
+ * dedupe against each other rather than being treated as distinct commodities.
+ */
 function existingKeys(content: string): Set<string> {
   const keys = new Set<string>();
   for (const line of content.split("\n")) {
-    const m = /^P\s+(\d{4}-\d{2}-\d{2})\s+(\S+)/.exec(line);
-    if (m) keys.add(`${m[1]}\t${m[2]}`);
+    // Commodity is either a quoted string ("A B") or a run of non-space chars.
+    const m = /^P\s+(\d{4}-\d{2}-\d{2})\s+("[^"]+"|\S+)/.exec(line);
+    if (m) keys.add(`${m[1]}\t${bareName(m[2])}`);
   }
   return keys;
 }
 
+/**
+ * Extract the commodity symbol from a `commodity` directive's argument (the
+ * text after the `commodity` keyword). Handles the amount-style format
+ * (`1.000 USD`), a bare symbol (`USD`), and quoted names (`"VANG_TARGET_2030"`).
+ * Returns [bare, declaredForm] where `declaredForm` preserves any quoting so we
+ * can render `P` lines identically to how the commodity is declared.
+ */
+function parseCommodityDeclaration(arg: string): { bare: string; declaredForm: string } | null {
+  const quoted = /"([^"]+)"/.exec(arg);
+  if (quoted) return { bare: quoted[1], declaredForm: quoted[0] };
+  for (const token of arg.trim().split(/\s+/)) {
+    // Skip the numeric amount (e.g. `1.000`, `1,000.00`); the symbol is the
+    // first token that is not purely a number. Require a leading digit so a
+    // symbol like `.5X` or punctuation runs are not mistaken for an amount.
+    if (!/^[-+]?\d[\d.,]*$/.test(token)) return { bare: token, declaredForm: token };
+  }
+  return null;
+}
+
+/**
+ * Map of every declared commodity's unquoted name to the exact form it was
+ * declared with (quoted or not), read from commodities.journal.
+ */
+function declaredCommodities(): Map<string, string> {
+  const commoditiesPath = resolveSafePath("commodities.journal", LEDGER_DIR);
+  const content = existsSync(commoditiesPath) ? readFileSync(commoditiesPath, "utf-8") : "";
+  const map = new Map<string, string>();
+  for (const line of content.split("\n")) {
+    const m = /^\s*commodity\s+(.+?)\s*$/.exec(line);
+    if (!m) continue;
+    const parsed = parseCommodityDeclaration(m[1]);
+    if (parsed) map.set(parsed.bare, parsed.declaredForm);
+  }
+  return map;
+}
+
 export async function writePrices(entries: PriceEntry[], signal?: AbortSignal): Promise<WritePricesResult> {
+  // Reject any commodity that is not already declared in the ledger, before
+  // writing anything. This is the guard against a caller passing a Yahoo ticker
+  // (e.g. VTHRX) where the ledger commodity symbol (VANG_TARGET_2030) belongs:
+  // such a mistake would otherwise silently create a phantom commodity with no
+  // holdings. Only the quote currency is allowed to be auto-declared.
+  const declared = declaredCommodities();
+  const unknown = [...new Set(entries.map((e) => bareName(e.commodity)).filter((c) => !declared.has(c)))];
+  if (unknown.length > 0) {
+    const valid = [...declared.keys()].sort().join(", ");
+    throw new Error(
+      `Unknown commodity: ${unknown.join(", ")}. ` +
+        `The \`commodity\` must be a symbol already declared in the ledger, not a Yahoo ticker. ` +
+        `Declared commodities: ${valid}.`,
+    );
+  }
+
   const pricesPath = resolveSafePath("prices.journal", LEDGER_DIR);
   const oldContent = existsSync(pricesPath) ? readFileSync(pricesPath, "utf-8") : "";
 
@@ -61,14 +124,20 @@ export async function writePrices(entries: PriceEntry[], signal?: AbortSignal): 
   let skipped = 0;
 
   for (const entry of entries) {
+    // Render both commodity and currency in their declared form so quoting
+    // matches commodities.journal. An undeclared currency falls back to its
+    // bare name, which is exactly what declareMissingCurrencies will write.
+    const bare = bareName(entry.commodity);
+    const symbol = declared.get(bare) ?? bare;
+    const currency = declared.get(bareName(entry.currency)) ?? bareName(entry.currency);
     for (const point of entry.points) {
-      const key = `${point.date}\t${entry.commodity}`;
+      const key = `${point.date}\t${bare}`;
       if (seen.has(key)) {
         skipped++;
         continue;
       }
       seen.add(key);
-      newLines.push(formatPriceDirective(point.date, entry.commodity, point.close, entry.currency));
+      newLines.push(formatPriceDirective(point.date, symbol, point.close, currency));
     }
   }
 
@@ -82,7 +151,7 @@ export async function writePrices(entries: PriceEntry[], signal?: AbortSignal): 
     writeFileSync(pricesPath, newContent);
   }
 
-  declareMissingCommodities(entries);
+  declareMissingCurrencies(entries);
   ensurePricesIncluded();
 
   const ledgerIsValid = await validate(signal);
@@ -92,30 +161,21 @@ export async function writePrices(entries: PriceEntry[], signal?: AbortSignal): 
 }
 
 /**
- * Declare any commodity or quote currency not yet in commodities.journal.
- * Under `hledger check --strict` every commodity used in a `P` directive must
- * be declared. Reuses the same matching approach as ../transactions.ts.
+ * Declare any quote currency not yet in commodities.journal. Under
+ * `hledger check --strict` every commodity used in a `P` directive must be
+ * declared. Commodities themselves are validated up front (see writePrices) and
+ * must already exist, so only the currency side can need auto-declaration.
  */
-function declareMissingCommodities(entries: PriceEntry[]): void {
-  const symbols = new Set<string>();
-  for (const entry of entries) {
-    symbols.add(entry.commodity);
-    symbols.add(entry.currency);
-  }
+function declareMissingCurrencies(entries: PriceEntry[]): void {
+  const declared = declaredCommodities();
+  const missing = [...new Set(entries.map((e) => bareName(e.currency)).filter((c) => !declared.has(c)))];
+  if (missing.length === 0) return;
 
   const commoditiesPath = resolveSafePath("commodities.journal", LEDGER_DIR);
   const content = existsSync(commoditiesPath) ? readFileSync(commoditiesPath, "utf-8") : "";
-  const missing: string[] = [];
-  for (const sym of symbols) {
-    const pattern = new RegExp(`^commodity\\s+.*${sym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m");
-    if (!pattern.test(content)) missing.push(sym);
-  }
-
-  if (missing.length > 0) {
-    const declarations = missing.map((c) => `commodity ${c}`).join("\n");
-    const sep = content.length === 0 || content.endsWith("\n") ? "" : "\n";
-    writeFileSync(commoditiesPath, `${content}${sep}${declarations}\n`);
-  }
+  const declarations = missing.map((c) => `commodity ${c}`).join("\n");
+  const sep = content.length === 0 || content.endsWith("\n") ? "" : "\n";
+  writeFileSync(commoditiesPath, `${content}${sep}${declarations}\n`);
 }
 
 /** Ensure main.journal includes prices.journal (for pre-existing workspaces). */
