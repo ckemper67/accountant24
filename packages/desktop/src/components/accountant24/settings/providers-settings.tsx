@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useOAuthLogin } from "@/components/auth/useOAuthLogin";
 import { Badge } from "@/components/shadcn/badge";
 import { Button } from "@/components/shadcn/button";
+import { Input } from "@/components/shadcn/input";
 import { ItemActions, ItemContent, ItemTitle } from "@/components/shadcn/item";
 import { Spinner } from "@/components/shadcn/spinner";
 import { addEnabledModels, parseModelId } from "@/lib/enabledModels";
@@ -66,9 +67,10 @@ function ProvidersList({ status, reload }: { status: AuthStatus | null; reload: 
 
   const disconnect = useCallback(
     async (provider: string) => {
-      // Ollama lives in models.json (the app put it there), so it's removed via
-      // its own path; auth.json-backed providers are logged out.
+      // Ollama and LiteLLM live in models.json (the app put them there), so they
+      // are removed via their own paths; auth.json-backed providers are logged out.
       if (provider === "ollama") await authApi.removeOllama();
+      else if (provider === "litellm") await authApi.removeLiteLLM();
       else await authApi.logout(provider);
       // A default model from the removed provider is now dangling — clear it.
       const settings = await settingsApi.get();
@@ -122,10 +124,16 @@ function ProvidersList({ status, reload }: { status: AuthStatus | null; reload: 
   // it isn't connected yet we offer it as its own row — sorted in alphabetically
   // with the rest rather than pinned to the bottom.
   const ollamaConnected = status.providers.some((p) => p.provider === "ollama" && p.configured);
+  // LiteLLM has no fixed URL to probe, so (unlike Ollama) it's always offered as a
+  // connect option until it's configured; the user supplies the base URL.
+  const litellmConnected = status.providers.some((p) => p.provider === "litellm" && p.configured);
   const availableItems = [
     ...available.map((p) => ({ name: p.displayName, node: renderRow(p) })),
     ...(ollamaAvailable && !ollamaConnected
       ? [{ name: "Ollama", node: <OllamaRow key="ollama" onConnected={() => afterAdd("ollama")} /> }]
+      : []),
+    ...(!litellmConnected
+      ? [{ name: "LiteLLM", node: <LiteLLMRow key="litellm" onConnected={() => afterAdd("litellm")} /> }]
       : []),
   ].sort((a, b) => a.name.localeCompare(b.name));
 
@@ -151,6 +159,74 @@ function ProvidersList({ status, reload }: { status: AuthStatus | null; reload: 
         }}
       />
     </>
+  );
+}
+
+/** Connect a LiteLLM proxy: enter its base URL, then register every model it
+ *  exposes (with metadata queried from the proxy). This first cut supports open
+ *  (unauthenticated) proxies only; authenticated proxies are a follow-up. */
+function LiteLLMRow({ onConnected }: { onConnected: () => void | Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [baseUrl, setBaseUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const connect = async () => {
+    if (busy || !baseUrl.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await authApi.addAllLiteLLM(baseUrl.trim());
+      if (result.type === "error") throw new Error(result.message ?? "Failed to connect LiteLLM");
+      await onConnected();
+    } catch (e) {
+      setError(String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <SettingsRow>
+        <ItemContent>
+          <ItemTitle>
+            LiteLLM
+            <Badge variant="secondary">Proxy</Badge>
+          </ItemTitle>
+        </ItemContent>
+        <ItemActions>
+          {!open && (
+            <Button size="sm" variant="outline" className="w-28" onClick={() => setOpen(true)}>
+              Connect
+            </Button>
+          )}
+        </ItemActions>
+      </SettingsRow>
+      {open && (
+        <div className="mt-3 flex flex-col gap-2 border-t pt-3">
+          <Input
+            value={baseUrl}
+            placeholder="Base URL (e.g. http://localhost:4000)"
+            autoFocus
+            onChange={(e) => setBaseUrl(e.currentTarget.value)}
+            onKeyDown={(e) => e.key === "Enter" && connect()}
+          />
+          <p className="text-muted-foreground text-xs">
+            Connects to an open (unauthenticated) LiteLLM proxy -- typically one serving local models (e.g. Qwen) -- and
+            registers every model it exposes.
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={connect} disabled={busy || !baseUrl.trim()}>
+              {busy ? "Connecting..." : "Connect"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setOpen(false)} disabled={busy}>
+              Cancel
+            </Button>
+          </div>
+          {error && <ErrorBanner message={error} />}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -215,10 +291,10 @@ function ProviderRow({
       </ItemContent>
       <ItemActions>
         {p.configured ? (
-          // auth.json-backed providers can be logged out; Ollama can be removed
-          // (the app added it to models.json). Other models.json / env-var
-          // providers are hand-authored, so there's no remove action.
-          (p.removable || p.provider === "ollama") && (
+          // auth.json-backed providers can be logged out; Ollama and LiteLLM can
+          // be removed (the app added them to models.json). Other models.json /
+          // env-var providers are hand-authored, so there's no remove action.
+          (p.removable || p.provider === "ollama" || p.provider === "litellm") && (
             <Button size="sm" variant="outline" className="w-28" onClick={onDisconnect}>
               Disconnect
             </Button>

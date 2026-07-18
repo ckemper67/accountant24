@@ -12,6 +12,7 @@ import type {
   AuthProviders,
   AuthStatus,
   LedgerMentions,
+  LiteLLMInfo,
   OllamaInfo,
   SessionAgentEvent,
   SessionSummary,
@@ -167,6 +168,10 @@ export const authApi = {
   addOllama: (model: string) => api.invoke<{ type: string; message?: string }>("auth_add_ollama", { model }),
   addAllOllama: () => api.invoke<{ type: string; message?: string; count?: number }>("auth_add_all_ollama"),
   removeOllama: () => api.invoke<{ type: string; message?: string }>("auth_remove_ollama"),
+  detectLiteLLM: (baseUrl: string) => api.invoke<LiteLLMInfo>("auth_detect_litellm", { baseUrl }),
+  addAllLiteLLM: (baseUrl: string) =>
+    api.invoke<{ type: string; message?: string; count?: number }>("auth_add_all_litellm", { baseUrl }),
+  removeLiteLLM: () => api.invoke<{ type: string; message?: string }>("auth_remove_litellm"),
   login: (provider: string) => api.invoke<void>("auth_login", { provider }),
   loginRespond: (id: string, value: string | null) => api.invoke<void>("auth_login_respond", { id, value }),
   loginCancel: () => api.invoke<void>("auth_login_cancel"),
