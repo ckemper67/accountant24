@@ -7,8 +7,38 @@ description: Gives you an overview of everything you pay regularly, including re
 
 Give the user the full picture of what they pay regularly — bills and fixed
 obligations plus subscriptions — as one overview with totals and what's coming
-up. This is a read-only analysis: use the `query` tool only — never modify the
-journal in this workflow.
+up. This is a read-only analysis of the journal: use the `query` tool only —
+never modify the journal in this workflow. The one exception is the cache
+described below, which lives outside the journal.
+
+## Cache: recurring-expenses.md
+
+Full detection means scanning 13 months of postings, which is slow to redo on
+every ask. Cache the result in a dedicated file at the workspace root,
+`recurring-expenses.md`, and point to it from `memory.md` so other skills
+(like weekly-recap) can reuse it without re-deriving anything.
+
+- **Before detecting anything**, check whether `recurring-expenses.md`
+  exists and read its `Last refreshed:` date (first lines of the file).
+  - **Fresh** (refreshed within the last 14 days): skip the full 13-month
+    scan. Answer from the cached table directly. To catch anything the cache
+    might have missed, run one narrow `query` (`report: "reg"`,
+    `account_pattern: "Expenses"`, `begin_date: <last refreshed date>`,
+    `output_format: "csv"`) and fold in any new charges, price changes, or
+    payees that stopped appearing before you answer.
+  - **Stale or missing** (older than 14 days, absent, or the user explicitly
+    asks to refresh): run the full detection below, then rewrite the file.
+- **After a full detection**, write `recurring-expenses.md` at the workspace
+  root with the two report tables from the "Reporting" section below (same
+  columns, same grouping), a `Last refreshed: <today>` line, and the combined
+  totals. Use the file's own content as a plain markdown cache -- it doesn't
+  need extra structure beyond what a human (or another skill) would read.
+- **Update `memory.md`** with the `update_memory` tool so the pointer exists,
+  but only if it's missing -- don't rewrite memory.md on every refresh, only
+  add the pointer once: a short note that recurring bills and subscriptions
+  are cached in `recurring-expenses.md`, refreshed by this skill, and that
+  the file's own `Last refreshed` date is the source of truth for freshness
+  (not memory.md).
 
 ## Detecting recurring charges
 
