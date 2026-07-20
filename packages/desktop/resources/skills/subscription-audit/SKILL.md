@@ -10,44 +10,25 @@ memberships — present them as one overview, and flag what deserves attention.
 This is a read-only analysis: use the `query` tool only — never modify the
 journal in this workflow.
 
-## Detecting recurring charges
+## Get recurring charges from the shared cache
 
-<!-- Duplicated in the recurring-spending skill (minus the variable-amount
-     relaxation there). Keep the two sections in sync. -->
+This skill doesn't run its own detection. recurring-spending already detects
+every recurring charge (bills and subscriptions) and caches the result in
+`recurring-expenses.md` at the workspace root - reuse it instead of
+re-scanning the journal:
 
-1. Pull the last 13 months of expense postings in machine-readable form with
-   the `query` tool: `report: "reg"`, `account_pattern: "Expenses"`,
-   `begin_date: <13 months ago>`, `output_format: "csv"`. 13 months, not 12,
-   so an annual renewal appears twice. For large ledgers, narrow with
-   `payee_pattern` on follow-up queries instead of re-pulling.
-2. Group postings by payee. A payee is a recurring-charge candidate when all
-   hold:
-   - it appears in **3 or more distinct months** (or twice, ~1 year apart, for
-     annual plans), and
-   - the interval between charges is regular — monthly ±4 days, weekly ±1 day,
-     quarterly ±1 week, yearly ±2 weeks, and
-   - the amounts are identical or step between two stable values (a step is a
-     price change, not a disqualifier — record it).
-3. Regularity beats frequency: payees with irregular gaps or widely varying
-   amounts (groceries, restaurants, fuel) are never subscriptions, no matter
-   how often they appear.
-4. One payee can hide both a subscription and ordinary shopping (Amazon orders
-   vs Prime, an Apple device vs Apple Music). Isolate the fixed-amount regular
-   series and judge it alone — never flag a payee wholesale.
-5. Payee spelling drifts ("Netflix" vs "NETFLIX.COM" vs "Netflix.com
-   Amsterdam") — normalize case and punctuation when grouping, and say which
-   payees you merged so the user can correct you.
-
-## Keeping only subscriptions
-
-This skill covers services the user could cancel today, with no penalty, and
-keep functioning:
-
-- **In**: streaming and music, software and SaaS, apps, cloud storage, news
-  and magazines, gym and other memberships, recurring donations.
-- **Out**: rent or mortgage, utilities, insurance, loan payments, taxes, phone
-  plans, internet, childcare. These are obligations, not subscriptions — leave
-  them out of this report entirely.
+1. Read `recurring-expenses.md`. If it doesn't exist, or its `Last refreshed`
+   date is more than 14 days old, invoke the recurring-spending skill's
+   detection process once to (re)create a fresh cache, then continue from its
+   output. Don't re-derive recurring charges yourself.
+2. Take the **Subscriptions and memberships** table from the cache as your
+   working set - the bills table is out of scope for this skill. The cache
+   already applies the cancel-today test (see recurring-spending's
+   "Grouping" section), so don't re-litigate that classification here.
+3. Drop any cached entry whose Notes mention a banded/variable amount (e.g.
+   "amount varies") - a metered, fluctuating charge is a utility-like bill,
+   not a subscription with a fixed or stepped price, even if recurring-spending
+   grouped it as cancellable.
 
 If the user's question is really about total monthly costs or bills, use the
 recurring-spending skill instead of stretching this one.
@@ -56,32 +37,27 @@ recurring-spending skill instead of stretching this one.
 
 Present a single table sorted by monthly-equivalent cost:
 
-| Payee | Account | Cadence | Amount | ≈ Monthly | Last charged | Next expected | Notes |
+| Payee | Account | Cadence | Amount | ≈ Monthly | First charged | Last charged | Next expected | Notes |
 
-- **Payee** = the normalized payee name from the journal (spelling variants
-  merged).
-- **Account** = the expense account the charge posts to, as the full account
-  name (e.g. `Expenses:Entertainment`).
-- **Notes** = short flags like "uncertain match" or "merged from 3 spellings";
-  leave the cell empty when there's nothing to note.
-- **Next expected** = last charge date + cadence. Flag anything more than one
-  full cadence overdue as *probably cancelled* — list it separately, don't
-  count it in the totals.
+- **Next expected** = last charge date + cadence, as computed by the cache.
+  Flag anything more than one full cadence overdue as *probably cancelled* -
+  list it separately, don't count it in the totals. The cache's own
+  "Expected but not seen" callout already identifies these; cross-check
+  against it rather than re-deriving.
 - Below the table show the total **per month and per year** in the ledger's
   own currency — the yearly figure is what makes people act. If several
   currencies appear, keep separate totals per currency; do not convert unless
   the user asks.
-- When a detection is uncertain, show the evidence ("charged 12 times, same
-  amount, about 30 days apart") so the user can judge it.
 
 After the table, call out only what's noteworthy, in this order:
 
-- **Price increases** — same service, higher amount between consecutive
-  charges: show old → new, the percentage, and the per-year impact.
+- **Price increases** - read directly off the cache's "Price increases"
+  callout, filtered to subscription payees: show old → new, the percentage,
+  and the per-year impact.
 - **Possible duplicates** — overlapping services of the same kind (two music
   streaming payees, two cloud-storage payees).
 - **Annual renewals coming up** within the next 60 days.
-- **Recently started** — a recurring charge whose first occurrence is within
+- **Recently started** — a subscription whose First charged date is within
   the last ~2 months: mention it ("started five weeks ago") so a forgotten
   trial conversion doesn't slip by.
 
