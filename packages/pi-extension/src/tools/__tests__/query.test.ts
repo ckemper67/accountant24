@@ -183,6 +183,19 @@ describe("arg-building", () => {
     expect(spawnArgs()).not.toContain("--invert");
   });
 
+  test("builds args with --pivot and its field value adjacent", async () => {
+    await run({ report: "bal", pivot: "payee" });
+    const args = spawnArgs();
+    const i = args.indexOf("--pivot");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe("payee");
+  });
+
+  test("does not add --pivot when omitted", async () => {
+    await run({ report: "bal" });
+    expect(spawnArgs()).not.toContain("--pivot");
+  });
+
   test("builds args with output format", async () => {
     await run({ report: "reg", output_format: "csv" });
     const args = spawnArgs();

@@ -46,6 +46,12 @@ const Params = Type.Object({
       { description: "Period grouping for multi-period reports" },
     ),
   ),
+  pivot: Type.Optional(
+    Type.String({
+      description:
+        "Pivot the report on a field or tag (e.g. 'payee', 'code', or a tag name) - replaces account names with that field's values. Native hledger --pivot. With report:bal + period:monthly this yields a payee-by-month matrix.",
+    }),
+  ),
   depth: Type.Optional(Type.Number({ description: "Account depth limit (2 = Assets:Bank, not Assets:Bank:Checking)" })),
   invert: Type.Optional(Type.Boolean({ description: "Flip signs — show expenses as positive (--invert)" })),
   output_format: Type.Optional(

@@ -47,6 +47,7 @@ function buildQueryArgs(params: any, resolved: string): string[] {
     args.push(PERIOD_FLAGS[params.period]);
   }
 
+  if (params.pivot) args.push("--pivot", params.pivot);
   if (params.depth != null) args.push("--depth", String(params.depth));
   if (params.invert) args.push("--invert");
   if (params.output_format) args.push("-O", params.output_format);
