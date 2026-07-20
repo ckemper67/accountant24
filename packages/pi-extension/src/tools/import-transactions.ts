@@ -21,12 +21,20 @@ const ColumnMap = Type.Optional(
 const Params = Type.Object({
   file_path: Type.String({
     description:
-      "Workspace-relative path to the CSV bank export, e.g. files/2025/01/statement.csv. " +
-      "For PDF/image statements, use extract_text first to get the text, then import_transactions.",
+      "Workspace-relative path to the CSV or OFX/QFX bank export, e.g. files/2025/01/statement.csv. " +
+      "For PDF/image statements, use extract_text first to get the text, then import_transactions_from_rows.",
   }),
   account: Type.String({
     description: "Ledger account the statement belongs to, e.g. Assets:Bank:BayFed:Checking",
   }),
+  format: Type.Optional(
+    Type.Union([Type.Literal("csv"), Type.Literal("ofx")], {
+      description:
+        "File format. Omit to detect from the extension (.csv/.tsv -> csv, .ofx/.qfx -> ofx). If detection " +
+        "fails or the content doesn't match, the tool errors with a preview of the file's first lines -- read " +
+        "the file yourself to confirm the real format, then retry with this set explicitly.",
+    }),
+  ),
   currency: Type.Optional(
     Type.String({
       description:
@@ -99,22 +107,25 @@ const PROMPT_SNIPPET =
   "Bulk-import a CSV bank export (auto-detects encoding, number format, date order; deduplicates on re-import)";
 
 const PROMPT_GUIDELINES = [
-  "import_transactions reads a CSV file by path. For PDF or image statements, use extract_text then import_transactions_from_rows instead.",
+  "import_transactions reads a CSV or OFX/QFX file by path. For PDF or image statements, use extract_text then import_transactions_from_rows instead.",
   "Run with dry_run:true before the real import to confirm parsed counts, detected formats, and a sample.",
   "uncategorized_expense_account and uncategorized_income_account are required: pass accounts that already exist in the injected list (the tool does not create accounts). Pick them before calling, even for dry_run.",
   "After import, re-categorize the uncategorized accounts with modify_transactions.",
-  "If the number_format or date_format look wrong in the dry_run output, pass an explicit override.",
+  "If the number_format or date_format look wrong in the dry_run output, pass an explicit override. These are ignored for OFX (unambiguous by spec).",
   "If a required column is not found, supply column_map with the exact header names from the CSV.",
   "Leading metadata/preamble rows before the header are skipped automatically; only set skip_rows if the wrong header line is picked.",
+  "If the tool errors that it cannot determine the format, or that the content doesn't match, read the file yourself to identify its real format, then retry with format set explicitly.",
+  "If the result includes possibleDuplicates, they were NOT written -- their (account, date, amount) collided with an existing transaction whose description could not be confirmed. Review them and use add_transactions to add any that are genuinely new.",
 ];
 
 export const importTransactionsTool: ToolDefinition<typeof Params, ImportResult> = {
   name: "import_transactions",
   label: LABEL,
   description:
-    "Bulk-import a CSV bank export into the ledger. Auto-detects encoding (UTF-8, windows-1252), " +
-    "number format (US/DE/FR/CH), and date order. Deduplicates on re-import via import_id tags. " +
-    "Routes each transaction through the standard validated pipeline (monthly files, hledger check --strict).",
+    "Bulk-import a CSV or OFX/QFX bank export into the ledger. Auto-detects encoding (UTF-8, windows-1252), " +
+    "number format (US/DE/FR/CH), and date order. Deduplicates on re-import, including against untagged " +
+    "transactions written before this tool existed. Routes each transaction through the standard validated " +
+    "pipeline (monthly files, hledger check --strict).",
   promptSnippet: PROMPT_SNIPPET,
   promptGuidelines: PROMPT_GUIDELINES,
   // Serialize every ledger write: "sequential" makes pi run any batch containing this
@@ -128,6 +139,7 @@ export const importTransactionsTool: ToolDefinition<typeof Params, ImportResult>
       {
         file_path: params.file_path,
         account: params.account,
+        format: params.format,
         currency: params.currency,
         number_format: params.number_format,
         date_format: params.date_format,

@@ -22,6 +22,7 @@ const RESULT: ImportResult = {
   dateOrder: "mdy",
   dryRun: false,
   sample: [],
+  possibleDuplicates: [],
   transactions: [{ transactionText: "tx", fullFilePath: "/ws/ledger/2025/01.journal" }],
 };
 

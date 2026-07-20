@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
-import type { DedupRow } from "../dedup";
+import type { DedupRow, ExistingFingerprints } from "../dedup";
 import { computeImportId, reconcile } from "../dedup";
+
+function fingerprints(exactIds: Iterable<string> = []): ExistingFingerprints {
+  return { exactIds: new Set(exactIds), weakCounts: new Map() };
+}
 
 describe("computeImportId()", () => {
   const row: DedupRow = {
@@ -70,20 +74,20 @@ describe("reconcile()", () => {
 
   test("should mark all rows as new when existingIds is empty", () => {
     const rows = [makeRow("2025-01-15", -5), makeRow("2025-01-16", -5)];
-    const result = reconcile(rows, account, new Set());
+    const result = reconcile(rows, account, fingerprints());
     expect(result.every((r) => r.isNew)).toBe(true);
   });
 
   test("should mark a row as not new when its import_id is already present", () => {
     const rows = [makeRow("2025-01-15", -5)];
     const existingId = computeImportId(account, rows[0], 0);
-    const result = reconcile(rows, account, new Set([existingId]));
+    const result = reconcile(rows, account, fingerprints([existingId]));
     expect(result[0].isNew).toBe(false);
   });
 
   test("should assign import_ids in the result", () => {
     const rows = [makeRow("2025-01-15", -5)];
-    const result = reconcile(rows, account, new Set());
+    const result = reconcile(rows, account, fingerprints());
     expect(result[0].importId).toMatch(/^csv:/);
   });
 
@@ -94,11 +98,11 @@ describe("reconcile()", () => {
       const row3 = makeRow("2025-01-17", -15);
 
       // First import: rows 1 and 2.
-      const firstImportResult = reconcile([row1, row2], account, new Set());
-      const importedIds = new Set(firstImportResult.filter((r) => r.isNew).map((r) => r.importId));
+      const firstImportResult = reconcile([row1, row2], account, fingerprints());
+      const importedIds = firstImportResult.filter((r) => r.isNew).map((r) => r.importId);
 
       // Second import: rows 1, 2, and 3 (longer export).
-      const result = reconcile([row1, row2, row3], account, importedIds);
+      const result = reconcile([row1, row2, row3], account, fingerprints(importedIds));
 
       expect(result[0].isNew).toBe(false); // row1 already imported
       expect(result[1].isNew).toBe(false); // row2 already imported
@@ -110,11 +114,11 @@ describe("reconcile()", () => {
       const row2 = makeRow("2025-01-16", -10);
       const row3 = makeRow("2025-01-17", -15);
 
-      const first = reconcile([row1, row2], account, new Set());
-      const importedIds = new Set(first.filter((r) => r.isNew).map((r) => r.importId));
+      const first = reconcile([row1, row2], account, fingerprints());
+      const importedIds = first.filter((r) => r.isNew).map((r) => r.importId);
 
       // Re-export in a different row order plus one new row.
-      const result = reconcile([row3, row2, row1], account, importedIds);
+      const result = reconcile([row3, row2, row1], account, fingerprints(importedIds));
       const byNew = result.filter((r) => r.isNew);
       expect(byNew).toHaveLength(1); // only row3 is new
     });
@@ -126,7 +130,7 @@ describe("reconcile()", () => {
       const row1 = makeRow("2025-01-15", -5, "Coffee");
       const row2 = makeRow("2025-01-15", -5, "Coffee");
 
-      const result = reconcile([row1, row2], account, new Set());
+      const result = reconcile([row1, row2], account, fingerprints());
 
       // Both should be new, with different import_ids.
       expect(result[0].isNew).toBe(true);
@@ -139,11 +143,11 @@ describe("reconcile()", () => {
       const row2 = makeRow("2025-01-15", -5, "Coffee");
 
       // First import: both rows.
-      const firstResult = reconcile([row1, row2], account, new Set());
-      const imported = new Set(firstResult.filter((r) => r.isNew).map((r) => r.importId));
+      const firstResult = reconcile([row1, row2], account, fingerprints());
+      const imported = firstResult.filter((r) => r.isNew).map((r) => r.importId);
 
       // Re-import same two rows.
-      const result = reconcile([row1, row2], account, imported);
+      const result = reconcile([row1, row2], account, fingerprints(imported));
       expect(result[0].isNew).toBe(false);
       expect(result[1].isNew).toBe(false);
     });
@@ -152,14 +156,123 @@ describe("reconcile()", () => {
       const row = makeRow("2025-01-15", -5, "Coffee");
 
       // Ledger already holds two copies: their import_ids are ordinals 0 and 1.
-      const existingIds = new Set([computeImportId(account, row, 0), computeImportId(account, row, 1)]);
+      const existingIds = [computeImportId(account, row, 0), computeImportId(account, row, 1)];
 
       // File has 3 copies -> ordinals 0,1,2; only ordinal 2 is new.
-      const result = reconcile([row, row, row], account, existingIds);
+      const result = reconcile([row, row, row], account, fingerprints(existingIds));
 
       expect(result[0].isNew).toBe(false);
       expect(result[1].isNew).toBe(false);
       expect(result[2].isNew).toBe(true);
+    });
+  });
+
+  describe("weak fallback (account+date+amount, no description)", () => {
+    test("should drop a row as a possible duplicate when it weakly matches an existing description-less transaction", () => {
+      const rows = [makeRow("2025-02-01", -15, "Aqua Springs")];
+      const existing: ExistingFingerprints = {
+        exactIds: new Set(),
+        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 1]]),
+      };
+
+      const result = reconcile(rows, account, existing);
+      expect(result[0].isNew).toBe(false);
+      expect(result[0].weakMatch).toBe(true);
+    });
+
+    test("should only weak-match up to the existing weak count, importing any surplus", () => {
+      const rows = [
+        makeRow("2025-02-01", -15, "Aqua Springs"),
+        makeRow("2025-02-01", -15, "Aqua Springs"),
+        makeRow("2025-02-01", -15, "Aqua Springs"),
+      ];
+      const existing: ExistingFingerprints = {
+        exactIds: new Set(),
+        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 2]]),
+      };
+
+      const result = reconcile(rows, account, existing);
+      expect(result[0].isNew).toBe(false);
+      expect(result[0].weakMatch).toBe(true);
+      expect(result[1].isNew).toBe(false);
+      expect(result[1].weakMatch).toBe(true);
+      expect(result[2].isNew).toBe(true);
+      expect(result[2].weakMatch).toBe(false);
+    });
+
+    test("should prefer an exact match over a weak match when both are available", () => {
+      const row = makeRow("2025-02-01", -15, "Aqua Springs");
+      const exactId = computeImportId(account, row, 0);
+      const existing: ExistingFingerprints = {
+        exactIds: new Set([exactId]),
+        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 1]]),
+      };
+
+      const result = reconcile([row], account, existing);
+      expect(result[0].isNew).toBe(false);
+      expect(result[0].weakMatch).toBe(false); // matched exactly, not via the weak fallback
+    });
+
+    test("should not weak-match a different account, date, or amount", () => {
+      const rows = [makeRow("2025-03-01", -20, "Aqua Springs")];
+      const existing: ExistingFingerprints = {
+        exactIds: new Set(),
+        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 1]]),
+      };
+
+      const result = reconcile(rows, account, existing);
+      expect(result[0].isNew).toBe(true);
+      expect(result[0].weakMatch).toBe(false);
+    });
+  });
+
+  describe("nativeId (e.g. OFX FITID)", () => {
+    test("should use '<source>:<nativeId>' as the exact match key, bypassing the hash", () => {
+      const row: DedupRow = { ...makeRow("2025-02-01", -15, "Aqua Springs"), nativeId: "BANK123" };
+      const existing = fingerprints(["ofx:BANK123"]);
+
+      const result = reconcile([row], account, existing, "ofx");
+      expect(result[0].importId).toBe("ofx:BANK123");
+      expect(result[0].isNew).toBe(false);
+      expect(result[0].weakMatch).toBe(false);
+    });
+
+    test("should fall through to the weak match when a nativeId misses the exact set (regression: FITID must not bypass untagged-history protection)", () => {
+      // This is the scenario that motivated the weak fallback in the first place: a
+      // transaction was hand-entered (or transcribed) before the importer existed, so it
+      // has no import_id tag at all -- re-importing the same OFX statement computes a
+      // "ofx:<FITID>" that was never written anywhere. If that miss were treated as "new"
+      // without falling through to the weak check, the transaction would be duplicated --
+      // exactly the bug this whole fallback exists to prevent.
+      const row: DedupRow = { ...makeRow("2025-02-01", -15, "Aqua Springs"), nativeId: "BANK999-NEVER-SEEN" };
+      const existing: ExistingFingerprints = {
+        exactIds: new Set(), // no tagged transaction has this (or any) FITID
+        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 1]]), // but an untagged one matches on date+amount
+      };
+
+      const result = reconcile([row], account, existing, "ofx");
+      expect(result[0].isNew).toBe(false);
+      expect(result[0].weakMatch).toBe(true);
+    });
+
+    test("should treat a nativeId row with no exact or weak match as genuinely new", () => {
+      const row: DedupRow = { ...makeRow("2025-02-01", -15, "Aqua Springs"), nativeId: "BANK999" };
+      const result = reconcile([row], account, fingerprints());
+      expect(result[0].isNew).toBe(true);
+      expect(result[0].weakMatch).toBe(false);
+    });
+
+    test("should not consume an ordinal slot in the hash-based fallback for nativeId rows", () => {
+      // A nativeId row and a hash-based row sharing the same base fingerprint must not
+      // interfere with each other's ordinal counting.
+      const row1: DedupRow = { ...makeRow("2025-02-01", -15, "Aqua Springs"), nativeId: "BANK-A" };
+      const row2 = makeRow("2025-02-01", -15, "Aqua Springs"); // no nativeId -- uses ordinal 0
+
+      const result = reconcile([row1, row2], account, fingerprints(), "ofx");
+      expect(result[0].importId).toBe("ofx:BANK-A");
+      expect(result[1].importId).toMatch(/^ofx:(?!BANK-A)/);
+      expect(result[0].isNew).toBe(true);
+      expect(result[1].isNew).toBe(true);
     });
   });
 });

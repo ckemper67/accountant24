@@ -52,8 +52,8 @@ const DATE_HEADERS = [
   "trans. date",
 ];
 const AMOUNT_HEADERS = ["amount", "betrag", "value", "sum", "total", "amount (eur)", "amount (usd)"];
-const DEBIT_HEADERS = ["debit", "debit amount", "withdrawal", "withdrawal amount", "ausgabe", "soll"];
-const CREDIT_HEADERS = ["credit", "credit amount", "deposit", "deposit amount", "einnahme", "haben"];
+const DEBIT_HEADERS = ["debit", "debit amount", "amount debit", "withdrawal", "withdrawal amount", "ausgabe", "soll"];
+const CREDIT_HEADERS = ["credit", "credit amount", "amount credit", "deposit", "deposit amount", "einnahme", "haben"];
 const DESCRIPTION_HEADERS = [
   "description",
   "memo",

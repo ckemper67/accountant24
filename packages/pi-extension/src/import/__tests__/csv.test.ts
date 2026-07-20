@@ -139,6 +139,18 @@ describe("parseCsv()", () => {
       const rows = parseCsv(csv);
       expect(rows[0].amount).toBe("-99.50");
     });
+
+    test("should detect reversed 'Amount Debit'/'Amount Credit' headers", () => {
+      const csv = [
+        "Date,Description,Amount Debit,Amount Credit",
+        "2025-01-15,Grocery Store,45.00,",
+        "2025-01-16,Paycheck,,100.00",
+      ].join("\n");
+      const rows = parseCsv(csv);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].amount).toBe("-45.00");
+      expect(rows[1].amount).toBe("100.00");
+    });
   });
 
   describe("blank lines and whitespace", () => {

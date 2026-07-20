@@ -25,23 +25,33 @@ import { loadExistingImportIds, reconcile } from "./dedup";
 import { decodeBuffer } from "./encoding";
 import type { NumberFormat } from "./numbers";
 import { detectNumberFormat, parseLocaleAmount } from "./numbers";
+import { looksLikeOfx, parseOfx } from "./ofx";
 
 // ── Types ────────────────────────────────────────────────────────────
 
+/** File format for runImport. "auto" (the default) detects from the file extension. */
+export type ImportFileFormat = "csv" | "ofx";
+
 export interface ImportParams {
-  /** Workspace-relative path to the CSV file. */
+  /** Workspace-relative path to the statement file (CSV or OFX/QFX). */
   file_path: string;
   /** Ledger account this statement belongs to, e.g. "Assets:Bank:Checking". */
   account: string;
+  /**
+   * File format; omit to detect from the file extension (.csv/.tsv -> csv, .ofx/.qfx ->
+   * ofx). If detection fails, or the content doesn't match the chosen/detected format, the
+   * tool errors with a preview of the file so you can inspect it and retry explicitly.
+   */
+  format?: ImportFileFormat;
   /** Statement currency (used when the CSV has no currency column). */
   currency?: string;
-  /** Explicit number format override; omit to auto-detect. */
+  /** Explicit number format override; omit to auto-detect. Ignored for OFX (always "us"). */
   number_format?: NumberFormat;
-  /** Explicit date format override: "MDY" | "DMY". */
+  /** Explicit date format override: "MDY" | "DMY". Ignored for OFX (dates are unambiguous). */
   date_format?: "MDY" | "DMY";
-  /** Column name overrides. */
+  /** Column name overrides. CSV only. */
   column_map?: ColumnMap;
-  /** Number of leading (non-empty) lines to skip before the header; omit to auto-detect. */
+  /** Number of leading (non-empty) lines to skip before the header; omit to auto-detect. CSV only. */
   skip_rows?: number;
   /** Catch-all account for outflow (negative) rows, in the workspace's own naming. */
   uncategorized_expense_account?: string;
@@ -100,6 +110,12 @@ export interface ImportResult {
   dryRun: boolean;
   /** First few new transactions as formatted strings (preview). */
   sample: string[];
+  /**
+   * Rows NOT written because they weakly matched an existing description-less transaction
+   * on (account, date, amount) alone -- ambiguous, so treated as a likely duplicate rather
+   * than written. Review and re-add via add_transactions if any of these are genuinely new.
+   */
+  possibleDuplicates: Array<{ date: string; amount: number; currency: string; payee: string; description?: string }>;
   /** CSV header/preamble detection (absent for inline-row imports). */
   detection?: ImportDetection;
   /** The resolved balancing (catch-all) accounts used, and whether each was already declared. */
@@ -164,6 +180,19 @@ export function renderImportResult(result: ImportResult): string {
     for (const s of result.sample) lines.push(`\n${s}`);
   }
 
+  if (result.possibleDuplicates.length > 0) {
+    lines.push("");
+    lines.push(
+      `Possible duplicates -- NOT imported (matched an existing transaction on account+date+amount, ` +
+        `but its description could not be recovered to confirm it's the same one). If any of these are ` +
+        `genuinely new, add them with add_transactions:`,
+    );
+    for (const p of result.possibleDuplicates) {
+      const desc = p.description ? ` | ${p.description}` : "";
+      lines.push(`  ${p.date} ${p.payee}${desc} -- ${p.amount.toFixed(2)} ${p.currency}`);
+    }
+  }
+
   if (!result.dryRun && result.transactions && result.transactions.length > 0) {
     const files = [...new Set(result.transactions.map((t) => t.fullFilePath))];
     lines.push("");
@@ -206,13 +235,33 @@ function emptyResult(encoding: string, dryRun: boolean, detection?: ImportDetect
     dateOrder: "mdy",
     dryRun,
     sample: [],
+    possibleDuplicates: [],
     detection,
   };
 }
 
+// ── Format detection ────────────────────────────────────────────────
+
+/** Detect the file format from its extension; undefined if not recognized. */
+function detectFormatFromExtension(filePath: string): ImportFileFormat | undefined {
+  const ext = filePath.toLowerCase().split(".").pop();
+  if (ext === "ofx" || ext === "qfx") return "ofx";
+  if (ext === "csv" || ext === "tsv") return "csv";
+  return undefined;
+}
+
+/** Build a "look at the file and retry with an explicit format" error, with a content preview. */
+function formatError(filePath: string, reason: string, text: string): Error {
+  const preview = text.split(/\r?\n/).slice(0, 5).join("\n");
+  return new Error(
+    `${reason} for "${filePath}".\nFirst 5 lines:\n${preview}\n\n` +
+      `Read the file to check its actual format, then retry with format: "csv" or format: "ofx".`,
+  );
+}
+
 // ── Front-ends ───────────────────────────────────────────────────────
 
-/** Import a CSV file from the workspace. */
+/** Import a CSV or OFX file from the workspace. */
 export async function runImport(params: ImportParams, signal?: AbortSignal): Promise<ImportResult> {
   // Resolve and read the file.
   const filePath = resolveWorkspacePath(params.file_path);
@@ -224,7 +273,52 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
   }
 
   const { text, encoding } = decodeBuffer(fileBuffer);
-  const { rows, headers, headerRowIndex, preamble } = parseCsvWithMeta(text, params.column_map, params.skip_rows);
+  const format = params.format ?? detectFormatFromExtension(params.file_path);
+  if (!format) {
+    throw formatError(params.file_path, "Cannot determine the format", text);
+  }
+
+  if (format === "ofx") {
+    if (!looksLikeOfx(text)) {
+      throw formatError(params.file_path, "File does not look like OFX (no OFXHEADER/<OFX> found)", text);
+    }
+    const { rows, accountCount } = parseOfx(text);
+    if (accountCount > 1) {
+      throw new Error(
+        `"${params.file_path}" contains ${accountCount} account blocks; this importer only supports one ` +
+          `account per OFX file. Split the file or import each account separately.`,
+      );
+    }
+
+    return importStatementRows(
+      rows,
+      {
+        account: params.account,
+        currency: params.currency,
+        // OFX amounts are always '.'-decimal per spec -- skip locale auto-detect, which
+        // could otherwise misread e.g. "1.234" as European thousands-grouping.
+        number_format: "us",
+        dry_run: params.dry_run,
+        uncategorized_expense_account: params.uncategorized_expense_account,
+        uncategorized_income_account: params.uncategorized_income_account,
+        source: "ofx",
+        encoding,
+      },
+      signal,
+      rows.map((r) => r.fitid),
+    );
+  }
+
+  let rows: StatementRow[];
+  let headers: string[];
+  let headerRowIndex: number;
+  let preamble: string[];
+  try {
+    ({ rows, headers, headerRowIndex, preamble } = parseCsvWithMeta(text, params.column_map, params.skip_rows));
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    throw formatError(params.file_path, `File does not look like CSV (${reason})`, text);
+  }
 
   return importStatementRows(
     rows,
@@ -282,6 +376,7 @@ async function importStatementRows(
   rows: StatementRow[],
   core: CoreParams,
   signal?: AbortSignal,
+  nativeIds?: Array<string | undefined>,
 ): Promise<ImportResult> {
   if (rows.length === 0) {
     return emptyResult(core.encoding, core.dry_run ?? false, core.detection);
@@ -302,15 +397,19 @@ async function importStatementRows(
     : detectDateOrder(dateSamples);
 
   // Parse all amounts and dates, build DedupRows.
-  const dedupRows: DedupRow[] = rows.map((row) => ({
+  const dedupRows: DedupRow[] = rows.map((row, i) => ({
     date: parseDate(row.date, dateOrder),
     amount: parseLocaleAmount(row.amount, numberFormat),
     description: row.description,
     payee: row.payee,
+    nativeId: nativeIds?.[i],
   }));
 
-  const [existingIds, declaredAccounts] = await Promise.all([loadExistingImportIds(signal), listAccounts()]);
-  const reconciled = reconcile(dedupRows, core.account, existingIds, core.source);
+  const [existingFingerprints, declaredAccounts] = await Promise.all([
+    loadExistingImportIds(core.account, core.source, signal),
+    listAccounts(),
+  ]);
+  const reconciled = reconcile(dedupRows, core.account, existingFingerprints, core.source);
 
   // Resolve the catch-all account for each direction. The tool never invents accounts
   // (account creation is the user's/LLM's job, as with add_transactions): the LLM must
@@ -346,11 +445,23 @@ async function importStatementRows(
 
   // Build AddTransactionParams for new rows only.
   const toImport: AddTransactionParams[] = [];
+  const possibleDuplicates: ImportResult["possibleDuplicates"] = [];
   for (let i = 0; i < rows.length; i++) {
-    if (!reconciled[i].isNew) continue;
-
     const row = rows[i];
     const dedupRow = dedupRows[i];
+
+    if (reconciled[i].weakMatch) {
+      possibleDuplicates.push({
+        date: dedupRow.date,
+        amount: dedupRow.amount,
+        currency: rowCurrency(row, core.currency ?? ""),
+        payee: buildPayee(row),
+        description: row.description || undefined,
+      });
+      continue;
+    }
+    if (!reconciled[i].isNew) continue;
+
     const currency = rowCurrency(row, core.currency ?? "");
     if (!currency) {
       throw new Error(
@@ -399,6 +510,7 @@ async function importStatementRows(
     numberFormat,
     dateOrder,
     sample,
+    possibleDuplicates,
     detection: core.detection,
     balancing,
   };
