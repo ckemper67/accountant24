@@ -140,6 +140,18 @@ describe("parseCsv()", () => {
       expect(rows[0].amount).toBe("-99.50");
     });
 
+    test("should prefer the debit value (negated) when both debit and credit are filled on the same row", () => {
+      const csv = ["Date,Debit,Credit", "2025-01-15,45.00,100.00"].join("\n");
+      const rows = parseCsv(csv);
+      expect(rows[0].amount).toBe("-45.00");
+    });
+
+    test("should default to zero when neither debit nor credit is filled", () => {
+      const csv = ["Date,Debit,Credit,Description", "2025-01-15,,,Zero-amount adjustment"].join("\n");
+      const rows = parseCsv(csv);
+      expect(rows[0].amount).toBe("0");
+    });
+
     test("should detect reversed 'Amount Debit'/'Amount Credit' headers", () => {
       const csv = [
         "Date,Description,Amount Debit,Amount Credit",

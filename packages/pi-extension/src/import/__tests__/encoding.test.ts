@@ -26,6 +26,17 @@ describe("decodeBuffer()", () => {
       expect(result.encoding).toBe("utf-8");
       expect(result.text).toBe("date,amount");
     });
+
+    test("should fall back to windows-1252 on a UTF-16 LE BOM (unsupported for CSV)", () => {
+      // UTF-16 LE BOM: FF FE. Not stripped -- left in place so strict UTF-8 rejects it and
+      // decoding falls through to windows-1252 (garbled, but a real file-format issue, not
+      // something this decoder is meant to fix).
+      const bom = Buffer.from([0xff, 0xfe]);
+      const content = Buffer.from("d\x00a\x00t\x00e\x00", "binary");
+      const buf = Buffer.concat([bom, content]);
+      const result = decodeBuffer(buf);
+      expect(result.encoding).toBe("windows-1252");
+    });
   });
 
   describe("windows-1252 fallback", () => {

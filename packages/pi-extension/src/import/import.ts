@@ -12,10 +12,16 @@
 // another.
 
 import { readFileSync } from "node:fs";
+import { ACCOUNTANT24_HOME, LEDGER_DIR } from "../config";
 import { resolveWorkspacePath } from "../files/paths";
 import { listAccounts } from "../ledger/accounts";
+import { JournalEditSession } from "../ledger/edit-session";
+import { HledgerCommandError, hledgerCheck } from "../ledger/hledger";
+import { resolveSafePath } from "../ledger/paths";
+import type { SourcePos } from "../ledger/source-pos";
 import type { AddTransactionParams } from "../ledger/transactions";
 import { addTransactions } from "../ledger/transactions";
+import { backfillTransaction } from "./backfill";
 import type { ColumnMap, StatementRow } from "./csv";
 import { parseCsvWithMeta } from "./csv";
 import type { DateOrder } from "./dates";
@@ -59,6 +65,16 @@ export interface ImportParams {
   uncategorized_income_account?: string;
   /** If true, parse and report but do not write to the ledger. */
   dry_run?: boolean;
+  /**
+   * If true, unambiguous dedup matches against an existing untagged/cross-source/pdf-tagged
+   * transaction backfill that transaction's import_id and original_description tags instead
+   * of just reporting it as a possible duplicate -- so a future re-import matches it
+   * exactly. Only the two tags are touched; the transaction's own payee/description and any
+   * other tag are left exactly as they are. Ambiguous matches (multiple existing candidates
+   * share the same account/date/amount) are still reported as possibleDuplicates, never
+   * guessed at.
+   */
+  backfill?: boolean;
 }
 
 /** A single raw row supplied inline (e.g. transcribed by the agent from a PDF). */
@@ -86,6 +102,8 @@ export interface RowImportParams {
   /** Catch-all account for inflow (positive) rows, in the workspace's own naming. */
   uncategorized_income_account?: string;
   dry_run?: boolean;
+  /** See ImportParams.backfill. */
+  backfill?: boolean;
 }
 
 /** CSV header-detection metadata, surfaced so the caller/LLM can validate the auto-detect. */
@@ -116,6 +134,13 @@ export interface ImportResult {
    * than written. Review and re-add via add_transactions if any of these are genuinely new.
    */
   possibleDuplicates: Array<{ date: string; amount: number; currency: string; payee: string; description?: string }>;
+  /**
+   * Rows that unambiguously matched an existing untagged/cross-source/pdf-tagged
+   * transaction and had that transaction's import_id + original_description tags
+   * backfilled (only when `backfill: true` was passed). Not written as new; their
+   * (date, amount, currency, payee) identify which existing entry was updated.
+   */
+  backfilled: Array<{ date: string; amount: number; currency: string; payee: string; description?: string }>;
   /** CSV header/preamble detection (absent for inline-row imports). */
   detection?: ImportDetection;
   /** The resolved balancing (catch-all) accounts used, and whether each was already declared. */
@@ -132,6 +157,7 @@ interface CoreParams {
   number_format?: NumberFormat;
   date_format?: "MDY" | "DMY";
   dry_run?: boolean;
+  backfill?: boolean;
   uncategorized_expense_account?: string;
   uncategorized_income_account?: string;
   /** Namespaces the import_id and is reported for provenance. */
@@ -185,11 +211,24 @@ export function renderImportResult(result: ImportResult): string {
     lines.push(
       `Possible duplicates -- NOT imported (matched an existing transaction on account+date+amount, ` +
         `but its description could not be recovered to confirm it's the same one). If any of these are ` +
-        `genuinely new, add them with add_transactions:`,
+        `genuinely new, add them with add_transactions. Re-run with backfill: true to tag the matched ` +
+        `entries instead, if they're confirmed duplicates:`,
     );
     for (const p of result.possibleDuplicates) {
       const desc = p.description ? ` | ${p.description}` : "";
       lines.push(`  ${p.date} ${p.payee}${desc} -- ${p.amount.toFixed(2)} ${p.currency}`);
+    }
+  }
+
+  if (result.backfilled.length > 0) {
+    lines.push("");
+    lines.push(
+      `${result.dryRun ? "Would backfill" : "Backfilled"} import_id + original_description onto ${result.backfilled.length} ` +
+        `existing matched transaction(s) instead of importing them as new:`,
+    );
+    for (const b of result.backfilled) {
+      const desc = b.description ? ` | ${b.description}` : "";
+      lines.push(`  ${b.date} ${b.payee}${desc} -- ${b.amount.toFixed(2)} ${b.currency}`);
     }
   }
 
@@ -236,6 +275,7 @@ function emptyResult(encoding: string, dryRun: boolean, detection?: ImportDetect
     dryRun,
     sample: [],
     possibleDuplicates: [],
+    backfilled: [],
     detection,
   };
 }
@@ -299,6 +339,7 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
         // could otherwise misread e.g. "1.234" as European thousands-grouping.
         number_format: "us",
         dry_run: params.dry_run,
+        backfill: params.backfill,
         uncategorized_expense_account: params.uncategorized_expense_account,
         uncategorized_income_account: params.uncategorized_income_account,
         source: "ofx",
@@ -328,6 +369,7 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
       number_format: params.number_format,
       date_format: params.date_format,
       dry_run: params.dry_run,
+      backfill: params.backfill,
       uncategorized_expense_account: params.uncategorized_expense_account,
       uncategorized_income_account: params.uncategorized_income_account,
       source: "csv",
@@ -361,6 +403,7 @@ export async function runRowImport(params: RowImportParams, signal?: AbortSignal
       number_format: params.number_format,
       date_format: params.date_format,
       dry_run: params.dry_run,
+      backfill: params.backfill,
       uncategorized_expense_account: params.uncategorized_expense_account,
       uncategorized_income_account: params.uncategorized_income_account,
       source: "pdf",
@@ -446,21 +489,29 @@ async function importStatementRows(
   // Build AddTransactionParams for new rows only.
   const toImport: AddTransactionParams[] = [];
   const possibleDuplicates: ImportResult["possibleDuplicates"] = [];
+  const backfilled: ImportResult["backfilled"] = [];
+  const backfillActions: Array<{ target: SourcePos; importId: string; description: string }> = [];
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const dedupRow = dedupRows[i];
 
-    if (reconciled[i].weakMatch) {
-      possibleDuplicates.push({
+    if (!reconciled[i].isNew) {
+      const report = {
         date: dedupRow.date,
         amount: dedupRow.amount,
         currency: rowCurrency(row, core.currency ?? ""),
         payee: buildPayee(row),
         description: row.description || undefined,
-      });
+      };
+      const target = reconciled[i].backfillTarget;
+      if (core.backfill && target) {
+        backfillActions.push({ target, importId: reconciled[i].importId, description: row.description ?? "" });
+        backfilled.push(report);
+      } else if (reconciled[i].weakMatch) {
+        possibleDuplicates.push(report);
+      }
       continue;
     }
-    if (!reconciled[i].isNew) continue;
 
     const currency = rowCurrency(row, core.currency ?? "");
     if (!currency) {
@@ -511,6 +562,7 @@ async function importStatementRows(
     dateOrder,
     sample,
     possibleDuplicates,
+    backfilled,
     detection: core.detection,
     balancing,
   };
@@ -518,6 +570,15 @@ async function importStatementRows(
   if (core.dry_run) {
     return { ...base, imported: 0, dryRun: true };
   }
+
+  // Backfill runs as its own validated, atomic edit -- separate from the addTransactions
+  // batch below -- since it touches existing on-disk transactions rather than appending
+  // new ones. Runs before addTransactions so a backfill failure aborts the whole import
+  // rather than leaving new transactions written against tags that never got fixed up.
+  if (backfillActions.length > 0) {
+    await applyBackfillActions(backfillActions, signal);
+  }
+
   if (newCount === 0) {
     return { ...base, imported: 0, dryRun: false };
   }
@@ -530,4 +591,41 @@ async function importStatementRows(
     transactions: writeResult.transactions,
     diffs: writeResult.diffs,
   };
+}
+
+/**
+ * Apply a batch of backfill edits (see ReconcileOutput.backfillTarget) as one validated,
+ * atomic unit: edit every target transaction's import_id + original_description tags,
+ * validate the whole ledger, and roll back all of it if the result would be invalid.
+ */
+async function applyBackfillActions(
+  actions: Array<{ target: SourcePos; importId: string; description: string }>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const session = new JournalEditSession();
+
+  // Process highest line number first within each file: backfillTransaction can insert a
+  // line, which shifts every later line in that file down by one -- processing bottom-up
+  // means an insertion never invalidates a not-yet-processed target's startLine, since every
+  // remaining target in that file sits above the insertion point.
+  const ordered = [...actions].sort((a, b) => b.target.startLine - a.target.startLine);
+
+  for (const { target, importId, description } of ordered) {
+    const content = session.read(target.file);
+    const { newContent, changed } = backfillTransaction(content, target, importId, description);
+    if (changed) session.write(target.file, newContent);
+  }
+
+  session.flush();
+
+  const mainPath = resolveSafePath("main.journal", LEDGER_DIR);
+  try {
+    await hledgerCheck(mainPath, { cwd: ACCOUNTANT24_HOME, signal });
+  } catch (e) {
+    session.restore();
+    if (e instanceof HledgerCommandError) {
+      throw new Error(`Backfill reverted -- the ledger would have errors:\n\n${e.stderr}`);
+    }
+    throw e;
+  }
 }

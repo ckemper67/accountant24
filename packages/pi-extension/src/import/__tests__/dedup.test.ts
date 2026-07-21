@@ -3,7 +3,7 @@ import type { DedupRow, ExistingFingerprints } from "../dedup";
 import { computeImportId, reconcile } from "../dedup";
 
 function fingerprints(exactIds: Iterable<string> = []): ExistingFingerprints {
-  return { exactIds: new Set(exactIds), weakCounts: new Map() };
+  return { exactIds: new Set(exactIds), weakCandidates: new Map(), syntheticFallback: new Map() };
 }
 
 describe("computeImportId()", () => {
@@ -170,14 +170,59 @@ describe("reconcile()", () => {
   describe("weak fallback (account+date+amount, no description)", () => {
     test("should drop a row as a possible duplicate when it weakly matches an existing description-less transaction", () => {
       const rows = [makeRow("2025-02-01", -15, "Aqua Springs")];
+      const wKey = `${account}|2025-02-01|-15.00`;
+      const location = { file: "/journal/2025/02.journal", startLine: 5 };
       const existing: ExistingFingerprints = {
         exactIds: new Set(),
-        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 1]]),
+        weakCandidates: new Map([[wKey, [location]]]),
+        syntheticFallback: new Map(),
       };
 
       const result = reconcile(rows, account, existing);
       expect(result[0].isNew).toBe(false);
       expect(result[0].weakMatch).toBe(true);
+      // Unambiguous: exactly one candidate shared this weak key, so it's a safe backfill target.
+      expect(result[0].backfillTarget).toEqual(location);
+    });
+
+    test("should not offer a backfill target when multiple candidates share the weak key (ambiguous which one this row is)", () => {
+      const rows = [makeRow("2025-02-01", -15, "Aqua Springs")];
+      const wKey = `${account}|2025-02-01|-15.00`;
+      const existing: ExistingFingerprints = {
+        exactIds: new Set(),
+        weakCandidates: new Map([
+          [
+            wKey,
+            [
+              { file: "/journal/2025/02.journal", startLine: 5 },
+              { file: "/journal/2025/02.journal", startLine: 12 },
+            ],
+          ],
+        ]),
+        syntheticFallback: new Map(),
+      };
+
+      const result = reconcile(rows, account, existing);
+      expect(result[0].isNew).toBe(false);
+      expect(result[0].weakMatch).toBe(true);
+      expect(result[0].backfillTarget).toBeUndefined();
+    });
+
+    test("should treat a synthetic fallback's weak key as zero-budget if absent from weakCandidates", () => {
+      // Defensive case: a synthetic exact id maps to a weak key that was never registered in
+      // weakCandidates. reconcile() must not throw or treat this as unlimited budget -- the
+      // row still matches exactly (via exactIds), just without reserving anything.
+      const row = makeRow("2025-02-01", -15, "Aqua Springs");
+      const exactId = computeImportId(account, row, 0);
+      const existing: ExistingFingerprints = {
+        exactIds: new Set([exactId]),
+        weakCandidates: new Map(),
+        syntheticFallback: new Map([[exactId, { weakKey: "some-unregistered-key", location: null }]]),
+      };
+
+      const result = reconcile([row], account, existing);
+      expect(result[0].isNew).toBe(false);
+      expect(result[0].weakMatch).toBe(false);
     });
 
     test("should only weak-match up to the existing weak count, importing any surplus", () => {
@@ -186,9 +231,19 @@ describe("reconcile()", () => {
         makeRow("2025-02-01", -15, "Aqua Springs"),
         makeRow("2025-02-01", -15, "Aqua Springs"),
       ];
+      const wKey = `${account}|2025-02-01|-15.00`;
       const existing: ExistingFingerprints = {
         exactIds: new Set(),
-        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 2]]),
+        weakCandidates: new Map([
+          [
+            wKey,
+            [
+              { file: "/journal/2025/02.journal", startLine: 5 },
+              { file: "/journal/2025/02.journal", startLine: 12 },
+            ],
+          ],
+        ]),
+        syntheticFallback: new Map(),
       };
 
       const result = reconcile(rows, account, existing);
@@ -203,21 +258,88 @@ describe("reconcile()", () => {
     test("should prefer an exact match over a weak match when both are available", () => {
       const row = makeRow("2025-02-01", -15, "Aqua Springs");
       const exactId = computeImportId(account, row, 0);
+      const wKey = `${account}|2025-02-01|-15.00`;
+      const location = { file: "/journal/2025/02.journal", startLine: 5 };
       const existing: ExistingFingerprints = {
         exactIds: new Set([exactId]),
-        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 1]]),
+        weakCandidates: new Map([[wKey, [location]]]),
+        syntheticFallback: new Map([[exactId, { weakKey: wKey, location }]]),
       };
 
       const result = reconcile([row], account, existing);
       expect(result[0].isNew).toBe(false);
       expect(result[0].weakMatch).toBe(false); // matched exactly, not via the weak fallback
+      expect(result[0].backfillTarget).toEqual(location); // still offered: exact match against a fallback entry
+    });
+
+    test("should share one consumption budget between exact and weak matches for the same key (regression: an entry matched exactly must not also be available for a different row's weak match)", () => {
+      // loadExistingImportIds registers a weak candidate for every fallback entry even when
+      // it ALSO has a usable exact fingerprint (see module header). Two existing entries with
+      // matching descriptions register 2 exact ordinals AND 2 weak candidates for their shared key.
+      // Three incoming rows share that same base fingerprint: the first two should match
+      // exactly (consuming both existing entries), leaving the third with nothing left to
+      // match against -- it must be genuinely new, not wrongly weak-matched against budget
+      // that the first two rows already claimed via the exact path.
+      const row = makeRow("2025-02-01", -15, "Aqua Springs");
+      const wKey = `${account}|2025-02-01|-15.00`;
+      const exactId0 = computeImportId(account, row, 0);
+      const exactId1 = computeImportId(account, row, 1);
+      const loc0 = { file: "/journal/2025/02.journal", startLine: 5 };
+      const loc1 = { file: "/journal/2025/02.journal", startLine: 12 };
+      const existing: ExistingFingerprints = {
+        exactIds: new Set([exactId0, exactId1]),
+        weakCandidates: new Map([[wKey, [loc0, loc1]]]),
+        syntheticFallback: new Map([
+          [exactId0, { weakKey: wKey, location: loc0 }],
+          [exactId1, { weakKey: wKey, location: loc1 }],
+        ]),
+      };
+
+      const result = reconcile([row, row, row], account, existing);
+      expect(result[0].isNew).toBe(false);
+      expect(result[0].weakMatch).toBe(false); // exact
+      expect(result[1].isNew).toBe(false);
+      expect(result[1].weakMatch).toBe(false); // exact
+      expect(result[2].isNew).toBe(true); // genuinely new -- budget already spent by rows 0,1
+      expect(result[2].weakMatch).toBe(false);
+    });
+
+    test("should be independent of row order: a genuinely new row before its duplicates is still recognized as new", () => {
+      // Same setup as above (2 existing entries, shared exact+weak budget), but the
+      // genuinely-new row arrives FIRST this time. A greedy single-pass allocator would
+      // wrongly weak-match this row (seeing budget before the two exact matches "claim" it);
+      // the two-pass reserve-then-allocate design must reach the same answer regardless.
+      const dup = makeRow("2025-02-01", -15, "Aqua Springs");
+      const genuinelyNew = makeRow("2025-02-01", -15, "Bagel Shop");
+      const wKey = `${account}|2025-02-01|-15.00`;
+      const exactId0 = computeImportId(account, dup, 0);
+      const exactId1 = computeImportId(account, dup, 1);
+      const loc0 = { file: "/journal/2025/02.journal", startLine: 5 };
+      const loc1 = { file: "/journal/2025/02.journal", startLine: 12 };
+      const existing: ExistingFingerprints = {
+        exactIds: new Set([exactId0, exactId1]),
+        weakCandidates: new Map([[wKey, [loc0, loc1]]]),
+        syntheticFallback: new Map([
+          [exactId0, { weakKey: wKey, location: loc0 }],
+          [exactId1, { weakKey: wKey, location: loc1 }],
+        ]),
+      };
+
+      const result = reconcile([genuinelyNew, dup, dup], account, existing);
+      expect(result[0].isNew).toBe(true); // Bagel Shop: genuinely new despite arriving first
+      expect(result[0].weakMatch).toBe(false);
+      expect(result[1].isNew).toBe(false); // exact
+      expect(result[2].isNew).toBe(false); // exact
     });
 
     test("should not weak-match a different account, date, or amount", () => {
       const rows = [makeRow("2025-03-01", -20, "Aqua Springs")];
       const existing: ExistingFingerprints = {
         exactIds: new Set(),
-        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 1]]),
+        weakCandidates: new Map([
+          [`${account}|2025-02-01|-15.00`, [{ file: "/journal/2025/02.journal", startLine: 5 }]],
+        ]),
+        syntheticFallback: new Map(),
       };
 
       const result = reconcile(rows, account, existing);
@@ -247,7 +369,11 @@ describe("reconcile()", () => {
       const row: DedupRow = { ...makeRow("2025-02-01", -15, "Aqua Springs"), nativeId: "BANK999-NEVER-SEEN" };
       const existing: ExistingFingerprints = {
         exactIds: new Set(), // no tagged transaction has this (or any) FITID
-        weakCounts: new Map([[`${account}|2025-02-01|-15.00`, 1]]), // but an untagged one matches on date+amount
+        // but an untagged one matches on date+amount
+        weakCandidates: new Map([
+          [`${account}|2025-02-01|-15.00`, [{ file: "/journal/2025/02.journal", startLine: 5 }]],
+        ]),
+        syntheticFallback: new Map(),
       };
 
       const result = reconcile([row], account, existing, "ofx");

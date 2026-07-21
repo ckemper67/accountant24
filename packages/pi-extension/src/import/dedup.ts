@@ -33,14 +33,18 @@
 //   tracks original statement order), giving the same same-day-duplicate handling (e.g.
 //   two Aqua Springs charges on one day) as the primary path.
 //
-// Weak fallback for transactions with NO recoverable description:
-//   Some accounts (e.g. ones transcribed before any tagging convention existed) have
-//   untagged transactions with no `original_description` tag and no "payee | note" split --
-//   there is no way to know what a re-imported row's description would be, so the exact
-//   fingerprint above can only match the (unlikely) case where the CSV description is also
-//   empty. For these transactions only, loadExistingImportIds additionally tracks a weaker
-//   (account, date, amount) key with no description. reconcile() treats a row that misses
-//   the exact match but hits this weak key as a POSSIBLE duplicate: it is NOT written (an
+// Weak fallback, registered unconditionally alongside every synthetic fingerprint:
+//   Whenever loadExistingImportIds computes a synthetic fingerprint for an entry (untagged,
+//   cross-source-tagged, or pdf-tagged -- see below), it ALSO tracks a weaker (account,
+//   date, amount) key with no description, regardless of whether a description was
+//   recoverable for that entry. A recovered description is never proof the current
+//   importer would compute the same text: two formats routinely disagree on which column is
+//   "the description" for the same real transaction (an OFX <MEMO> vs. a CSV description
+//   column can hold entirely different text; some CSV exports even put payee-like text in a
+//   column named "Description"), so gating the weak key on "was a description recovered"
+//   previously let real duplicates slip through silently whenever that recovered text
+//   didn't match what the current row hashes to. reconcile() treats a row that misses the
+//   exact match but hits this weak key as a POSSIBLE duplicate: it is NOT written (an
 //   unresolvable date+amount collision is more likely a real duplicate than coincidence, and
 //   a silently-written duplicate is worse than a silently-dropped one), but it is reported
 //   back via ReconcileOutput.weakMatch so the caller can surface it for manual review/re-add
@@ -56,10 +60,34 @@
 //   falls through to the same weak (account, date, amount) fallback as any other row, since
 //   the fallback exists for the state of the *existing* ledger entry (untagged), which a
 //   trustworthy incoming id can't fix on its own.
+//
+// Cross-source and PDF re-imports: an untrustworthy exact tag:
+//   An existing transaction's import_id is namespaced by the source that wrote it
+//   ("ofx:<fitid>", "csv:<hash>", "pdf:<hash>"). A same-source re-import's computed id
+//   matches that tag directly -- but a DIFFERENT source's computed id never can, since the
+//   hash spaces don't intersect (e.g. importing the same statement via CSV after it was
+//   already imported via OFX). loadExistingImportIds treats such a tag the same as no tag
+//   at all: it still records the real tag in exactIds (in case the other source imports
+//   again), but also falls through to compute a same-*current*-source synthetic
+//   fingerprint, exactly as it does for untagged entries.
+//
+//   That synthetic fingerprint alone is often not enough, though: the recovered
+//   description belongs to whichever format wrote the entry (an OFX <MEMO> vs. a CSV
+//   description column are frequently different text for the same transaction), so the
+//   synthetic hash may still miss -- see the weak-fallback section above for how that's
+//   covered.
+//
+//   PDF/image statements get the same untrustworthy-exact-tag treatment even against
+//   THEMSELVES (source === "pdf" on both sides): a "pdf:<hash>" tag's description came
+//   from an LLM transcription of extracted text, which is not guaranteed to be
+//   byte-identical between two import runs of the same statement (wording, whitespace, OCR
+//   variance). So a pdf-tagged entry always falls through to the weak-key path too, same
+//   as a genuine cross-source tag.
 
 import { ACCOUNTANT24_HOME, LEDGER_DIR } from "../config";
 import { runHledger } from "../ledger/hledger";
 import { resolveSafePath } from "../ledger/paths";
+import { parseSourcePos, type SourcePos } from "../ledger/source-pos";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -142,12 +170,6 @@ function tagValue(tags: unknown[], name: string): string | undefined {
   return undefined;
 }
 
-/** True if a CSV/row description can be recovered for this existing transaction. */
-function hasRecoverableDescription(tdescription: unknown, tags: unknown[]): boolean {
-  if (tagValue(tags, "original_description") !== undefined) return true;
-  return typeof tdescription === "string" && tdescription.includes(" | ");
-}
-
 /**
  * Recover the description a CSV/row import would have hashed for an existing transaction
  * that predates (or bypassed) the importer: prefer the `original_description` tag (set
@@ -164,12 +186,37 @@ function recoverDescription(tdescription: unknown, tags: unknown[]): string {
   return "";
 }
 
+/** A fallback (untagged/cross-source/pdf-tagged) entry's location, or null if unlocatable. */
+export type FallbackLocation = SourcePos | null;
+
+/** Where a synthetic exact id's underlying fallback entry lives, for optional backfilling. */
+export interface SyntheticFallback {
+  /** The weak key this entry also contributed to (see `weakCandidates`). */
+  weakKey: string;
+  location: FallbackLocation;
+}
+
 /** Existing-ledger fingerprints to reconcile incoming rows against. */
 export interface ExistingFingerprints {
-  /** Exact import_id values (real tags, plus synthetic ones for untagged transactions). */
+  /** Exact import_id values (real trustworthy tags, plus synthetic ones for fallback entries). */
   exactIds: Set<string>;
-  /** Count of untagged, description-less transactions per weak (account|date|amount) key. */
-  weakCounts: Map<string, number>;
+  /**
+   * One entry per fallback-entry candidate sharing a weak (account|date|amount) key, in
+   * ledger scan order (same order ordinals were assigned) -- the array's length is that
+   * key's weak-match budget. A candidate's own location is null when it couldn't be
+   * resolved (backfilling is simply skipped for that one).
+   */
+  weakCandidates: Map<string, FallbackLocation[]>;
+  /**
+   * For SYNTHETIC exact ids only (not trustworthy real tags): the underlying fallback
+   * entry's weak key and location. reconcile() uses the weak key to know that a row
+   * matching one of these exact ids also "spends" one unit of that entry's weak-key budget,
+   * so a different row can't also claim it via the weak fallback -- and uses the location to
+   * offer that exact same entry up for backfilling. Real trustworthy tags are absent from
+   * this map -- they never contribute to weakCandidates, so their exact hits must never
+   * touch any weak budget (or backfill target) either.
+   */
+  syntheticFallback: Map<string, SyntheticFallback>;
 }
 
 /**
@@ -181,7 +228,7 @@ export async function loadExistingImportIds(
   source: ImportSource,
   signal?: AbortSignal,
 ): Promise<ExistingFingerprints> {
-  const empty: ExistingFingerprints = { exactIds: new Set(), weakCounts: new Map() };
+  const empty: ExistingFingerprints = { exactIds: new Set(), weakCandidates: new Map(), syntheticFallback: new Map() };
 
   const mainPath = resolveSafePath("main.journal", LEDGER_DIR);
   let stdout: string;
@@ -204,24 +251,33 @@ export async function loadExistingImportIds(
   if (!Array.isArray(txns)) return empty;
 
   const exactIds = new Set<string>();
-  const weakCounts = new Map<string, number>();
+  const weakCandidates = new Map<string, FallbackLocation[]>();
+  const syntheticFallback = new Map<string, SyntheticFallback>();
   const fallbackOrdinals = new Map<string, number>();
 
   for (const tx of txns) {
     // Tags appear in ttags as an array of [name, value] pairs.
     const tags: unknown[] = Array.isArray(tx?.ttags) ? tx.ttags : [];
     const taggedImportId = tagValue(tags, "import_id");
+    // A same-source tag is trustworthy for exact matching -- a same-source re-import
+    // hashes to the identical value. A cross-source tag (e.g. "ofx:..." while importing
+    // csv) is not: the two formats' id schemes never intersect. Neither is a "pdf:" tag
+    // even when re-importing via pdf, since PDF descriptions are LLM-transcribed and not
+    // guaranteed byte-identical between runs -- see the module header.
+    const sameSource = taggedImportId?.startsWith(`${source}:`) ?? false;
+    const trustExactTag = sameSource && source !== "pdf";
     if (taggedImportId !== undefined) {
       exactIds.add(taggedImportId);
-      continue; // Already has a real import_id; no need for a synthetic fallback.
+      if (trustExactTag) continue;
     }
 
-    // No import_id tag: recompute what one would be for each posting on the target
+    // No import_id tag, or one whose exact match can't be trusted (cross-source or pdf):
+    // recompute what a current-source import_id would be for each posting on the target
     // account, so a later import of the same statement still dedups against this entry.
     const date = typeof tx?.tdate === "string" ? tx.tdate : undefined;
     if (!date) continue;
-    const recoverable = hasRecoverableDescription(tx?.tdescription, tags);
     const description = recoverDescription(tx?.tdescription, tags);
+    const location = parseSourcePos(tx?.tsourcepos);
 
     const postings: unknown[] = Array.isArray(tx?.tpostings) ? tx.tpostings : [];
     for (const posting of postings) {
@@ -239,20 +295,35 @@ export async function loadExistingImportIds(
         const key = baseKey(account, row);
         const ordinal = fallbackOrdinals.get(key) ?? 0;
         fallbackOrdinals.set(key, ordinal + 1);
-        exactIds.add(computeImportId(account, row, ordinal, source));
+        const syntheticId = computeImportId(account, row, ordinal, source);
+        exactIds.add(syntheticId);
 
-        // No recoverable description: also register a weak (account, date, amount)
-        // candidate, so a description-mismatched re-import of this transaction is
-        // flagged as a possible duplicate instead of silently re-written.
-        if (!recoverable) {
-          const wKey = weakKey(account, row);
-          weakCounts.set(wKey, (weakCounts.get(wKey) ?? 0) + 1);
-        }
+        // Always also register a weak (account, date, amount) candidate for entries that
+        // reach this point (untagged, cross-source-tagged, or pdf-tagged): a "recovered"
+        // description is never proof the current importer would compute the same text for
+        // this transaction -- e.g. a CSV export's "Description" column and an OFX <MEMO>
+        // routinely hold different text for the same real-world entry, or the CSV's own
+        // "Description" column may semantically match what another format calls the payee.
+        // Without this, a description mismatch here means the exact fingerprint above
+        // silently misses and the row is (wrongly) treated as brand new. A description-
+        // mismatched re-import is thus flagged as a possible duplicate instead.
+        //
+        // Record the link from this synthetic id to its weak key (and this entry's on-disk
+        // location) so reconcile() can tell, deterministically (not by guessing at
+        // consumption time), that a row exact-matching this id spends one unit of the SAME
+        // budget a weak-matching row would draw from -- one underlying entry can't satisfy
+        // two incoming rows via both channels at once -- and can offer this exact entry up
+        // for an optional backfill (see ReconcileOutput.backfillTarget).
+        const wKey = weakKey(account, row);
+        const candidates = weakCandidates.get(wKey) ?? [];
+        candidates.push(location);
+        weakCandidates.set(wKey, candidates);
+        syntheticFallback.set(syntheticId, { weakKey: wKey, location });
       }
     }
   }
 
-  return { exactIds, weakCounts };
+  return { exactIds, weakCandidates, syntheticFallback };
 }
 
 // ── Reconcile ────────────────────────────────────────────────────────
@@ -266,12 +337,25 @@ export interface ReconcileOutput {
    * written) but are reported back for manual review -- see module header.
    */
   weakMatch: boolean;
+  /**
+   * When this row matched an existing fallback (untagged, cross-source, or pdf-tagged)
+   * entry UNAMBIGUOUSLY, that entry's on-disk location -- so a caller can optionally
+   * backfill it with this row's importId and description instead of leaving it to drift out
+   * of sync (and re-flag or silently miss) on every future re-import. Always set for a
+   * synthetic exact match (which identifies exactly one entry by construction). For a weak
+   * match, only set when exactly one fallback entry ever shared the weak key -- with
+   * multiple candidates there's no way to know which one this row corresponds to, so no
+   * target is offered rather than guessing and backfilling the wrong entry. Always
+   * undefined for genuinely new rows and for rows matching a trustworthy same-source tag
+   * (already correctly tagged, nothing to backfill).
+   */
+  backfillTarget?: SourcePos;
 }
 
 /**
  * Determine which rows are new (not yet in the ledger) by import_id set membership, with a
  * weak (account, date, amount) fallback for existing transactions whose description is
- * unrecoverable (see module header).
+ * unrecoverable or untrustworthy (see module header).
  *
  * Each row without a `nativeId` is assigned a per-file ordinal (its index among rows sharing
  * the same base fingerprint) and hashed to an import_id; a row with a `nativeId` (e.g. an
@@ -282,13 +366,33 @@ export interface ReconcileOutput {
  * copies and only the surplus is new.
  *
  * Rows that miss the exact match -- regardless of whether they had a nativeId -- are then
- * checked against `existing.weakCounts`, ordinal-counted the same way: the first K rows
- * sharing a weak key are treated as possible duplicates of the K existing weak candidates
- * (isNew = false, weakMatch = true) and are not written; any surplus beyond K is genuinely
- * new. This fallback is NOT skipped for nativeId rows: a trustworthy incoming id says
- * nothing about whether the matching *existing* ledger entry was ever tagged, and OFX
- * statements can cover the exact untagged, pre-tool transactions the weak fallback exists
- * for.
+ * checked against `existing.weakCandidates`, sharing a budget per weak key with the
+ * exact-match path: an existing fallback entry that a row already claimed via its synthetic
+ * exact fingerprint must not ALSO be "available" for a different row to claim via the weak
+ * fallback, since `loadExistingImportIds` registers a weak candidate for every fallback
+ * entry (untagged, cross-source, or pdf-tagged) regardless of whether its synthetic exact
+ * fingerprint also gets registered.
+ *
+ * This runs in two passes specifically to be independent of incoming row order (a
+ * requirement, since row order is just statement order and carries no semantic meaning):
+ *
+ *   1. RESERVE: for every row that exact-matches a SYNTHETIC id (looked up via
+ *      `existing.syntheticFallback`, never a trustworthy real tag -- see
+ *      ExistingFingerprints), reserve one unit of that id's weak key budget, up to
+ *      `existing.weakCandidates`'s length for that key. This happens for ALL rows before any
+ *      weak allocation, so which rows get weak-matched in pass 2 never depends on the order
+ *      rows were seen in pass 1 relative to each other.
+ *   2. ALLOCATE: for rows that missed the exact match, walk them in order and allocate
+ *      whatever weak budget remains after pass 1's reservations; the first K such rows
+ *      sharing a weak key get isNew=false/weakMatch=true, any surplus is genuinely new.
+ *
+ * A trustworthy real tag's exact hit never touches `syntheticFallback` (it isn't in that
+ * map), so it can never wrongly reserve budget that belongs to an unrelated fallback entry
+ * sharing the same (account, date, amount).
+ *
+ * The weak fallback is NOT skipped for nativeId rows: a trustworthy incoming id says nothing
+ * about whether the matching *existing* ledger entry was ever tagged, and OFX statements can
+ * cover the exact untagged, pre-tool transactions the weak fallback exists for.
  */
 export function reconcile(
   rows: DedupRow[],
@@ -297,28 +401,51 @@ export function reconcile(
   source: ImportSource = "csv",
 ): ReconcileOutput[] {
   const fileOrdinalMap = new Map<string, number>();
-  const weakOrdinalMap = new Map<string, number>();
 
-  return rows.map((row) => {
-    let importId: string;
-    if (row.nativeId) {
-      importId = `${source}:${row.nativeId}`;
-    } else {
-      const key = baseKey(account, row);
-      const ordinal = fileOrdinalMap.get(key) ?? 0;
-      fileOrdinalMap.set(key, ordinal + 1);
-      importId = computeImportId(account, row, ordinal, source);
-    }
+  const importIds = rows.map((row) => {
+    if (row.nativeId) return `${source}:${row.nativeId}`;
+    const key = baseKey(account, row);
+    const ordinal = fileOrdinalMap.get(key) ?? 0;
+    fileOrdinalMap.set(key, ordinal + 1);
+    return computeImportId(account, row, ordinal, source);
+  });
+  const isExactHit = importIds.map((id) => existing.exactIds.has(id));
 
-    if (existing.exactIds.has(importId)) {
-      return { importId, isNew: false, weakMatch: false };
-    }
+  // Pass 1 (reserve): exact hits against a synthetic id spend one unit of its weak key's
+  // budget, order-independent since it considers every row before any weak allocation. A
+  // synthetic id always identifies exactly one existing entry, so its location is always a
+  // safe backfill target.
+  const weakConsumed = new Map<string, number>();
+  const backfillByRow = new Array<SourcePos | undefined>(rows.length);
+  for (let i = 0; i < rows.length; i++) {
+    if (!isExactHit[i]) continue;
+    const fallback = existing.syntheticFallback.get(importIds[i]);
+    if (fallback === undefined) continue; // trustworthy real tag -- no weak-budget coupling
+    const budget = existing.weakCandidates.get(fallback.weakKey)?.length ?? 0;
+    const consumed = weakConsumed.get(fallback.weakKey) ?? 0;
+    if (consumed < budget) weakConsumed.set(fallback.weakKey, consumed + 1);
+    if (fallback.location) backfillByRow[i] = fallback.location;
+  }
+
+  // Pass 2 (allocate): rows that missed the exact match draw from whatever weak budget pass
+  // 1 left, in row order (order matters only among rows that are themselves indistinguishable
+  // by any stronger signal, which is exactly what "weak" match means). A weak match's specific
+  // existing entry is only attributable -- and therefore only offered for backfill -- when
+  // exactly one candidate ever shared this weak key; with multiple candidates there's no way
+  // to know which one this row corresponds to.
+  return rows.map((row, i) => {
+    const importId = importIds[i];
+    if (isExactHit[i]) return { importId, isNew: false, weakMatch: false, backfillTarget: backfillByRow[i] };
 
     const wKey = weakKey(account, row);
-    const weakOrdinal = weakOrdinalMap.get(wKey) ?? 0;
-    weakOrdinalMap.set(wKey, weakOrdinal + 1);
-    const weakMatch = weakOrdinal < (existing.weakCounts.get(wKey) ?? 0);
+    const pool = existing.weakCandidates.get(wKey) ?? [];
+    const consumed = weakConsumed.get(wKey) ?? 0;
+    if (consumed < pool.length) {
+      weakConsumed.set(wKey, consumed + 1);
+      const backfillTarget = pool.length === 1 ? (pool[0] ?? undefined) : undefined;
+      return { importId, isNew: false, weakMatch: true, backfillTarget };
+    }
 
-    return { importId, isNew: !weakMatch, weakMatch };
+    return { importId, isNew: true, weakMatch: false };
   });
 }

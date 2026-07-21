@@ -310,6 +310,159 @@ describe("runImport() deduplication", () => {
   });
 });
 
+describe("runImport() existing-fingerprint lookup failure modes", () => {
+  test("should treat every row as new when hledger print fails (e.g. no ledger yet)", async () => {
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(1, "", "hledger: main.journal: openFile: does not exist");
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(result.imported).toBe(3);
+    expect(result.skipped).toBe(0);
+  });
+
+  test("should treat every row as new when hledger print returns invalid JSON", async () => {
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, "not valid json");
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(result.imported).toBe(3);
+    expect(result.skipped).toBe(0);
+  });
+
+  test("should recover a fallback description from the 'payee | note' half of tdescription when no original_description tag exists", async () => {
+    // No original_description tag and no payee tag either -- the only recovery path left is
+    // splitting tdescription on " | ", taking the note half (matching what a CSV row's own
+    // description would hash to).
+    const mockTxns = [
+      {
+        ttags: [],
+        tdate: "2025-01-15",
+        tdescription: "Whole Foods | Groceries",
+        tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    // SIMPLE_CSV's first row has description "Groceries", matching the recovered note half.
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(3);
+    expect(result.skipped).toBe(1);
+    expect(result.imported).toBe(2);
+  });
+
+  test("should treat a transaction with no ttags field at all as untagged", async () => {
+    const mockTxns = [
+      // No ttags key, not even an empty array.
+      { tdate: "2025-01-15", tdescription: "Groceries", tpostings: [{ paccount: ACCOUNT, pamount: [] }] },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    // No tsourcepos and no tags means no synthetic fingerprint's amount is ever resolved
+    // (pamount is empty), so this existing transaction contributes nothing to dedup; all
+    // three CSV rows import as new.
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(3);
+    expect(result.imported).toBe(3);
+  });
+
+  test("should skip an existing transaction with a missing/non-string tdate", async () => {
+    const mockTxns = [
+      {
+        ttags: [["original_description", "Groceries"]],
+        tdate: 12345, // not a string -- can't be used for dedup, entry is skipped entirely
+        tdescription: "Whole Foods",
+        tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    // Skipped entirely, so it never dedups against the CSV's matching row either.
+    expect(result.parsed).toBe(3);
+    expect(result.imported).toBe(3);
+  });
+
+  test("should ignore postings on a different account and postings with a malformed amount", async () => {
+    const mockTxns = [
+      {
+        ttags: [["original_description", "Groceries"]],
+        tdate: "2025-01-15",
+        tdescription: "Whole Foods",
+        tpostings: [
+          // A posting on an unrelated account -- must not be mistaken for the target account.
+          { paccount: "Expenses:Other", pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] },
+          // A posting on the target account, but with a non-numeric amount -- unusable.
+          { paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: "not-a-number", decimalPlaces: 2 } }] },
+        ],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    // Neither posting contributes a usable fingerprint, so all three CSV rows are new.
+    expect(result.parsed).toBe(3);
+    expect(result.imported).toBe(3);
+  });
+});
+
 // ── Deduplication fallback tests (untagged pre-existing transactions) ─
 
 describe("runImport() deduplication fallback for untagged transactions", () => {
@@ -392,6 +545,262 @@ describe("runImport() deduplication fallback for untagged transactions", () => {
     expect(result.parsed).toBe(3);
     expect(result.skipped).toBe(2);
     expect(result.imported).toBe(1);
+  });
+
+  test("should flag as a possible duplicate an untagged transaction whose recovered description doesn't match the CSV's own description column (real-world: bank's 'Description' column holds the counterparty name, not the memo)", async () => {
+    // Reproduces an actual production case: an existing untagged transaction (transcribed
+    // from an OFX statement by hand/agent) recorded original_description from OFX's <MEMO>
+    // ("- AUTOPMT") and original_payee_name from OFX's <NAME> ("External Withdrawal
+    // ACME BANK"). This bank's CSV export's "Description" column, though, holds NAME-like
+    // text, not memo-like text -- so the CSV row's own description is "External Withdrawal
+    // ACME BANK", not "- AUTOPMT". A "recoverable" description is therefore no guarantee
+    // it matches what the current importer computes: the weak (account, date, amount)
+    // fallback must still catch this.
+    const mockTxns = [
+      {
+        ttags: [
+          ["original_description", "- AUTOPMT"],
+          ["original_payee_name", "External Withdrawal ACME BANK"],
+        ],
+        tdate: "2025-01-15",
+        tdescription: "Internal Transfer",
+        tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    // SIMPLE_CSV's first row: 2025-01-15,-45.00,Whole Foods,Groceries -- description
+    // "Groceries" doesn't match the recovered "- AUTOPMT", but date+amount collide.
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(3);
+    expect(result.imported).toBe(2);
+    expect(result.possibleDuplicates).toHaveLength(1);
+  });
+});
+
+// ── Cross-source deduplication tests (e.g. CSV re-import after an OFX import) ─
+
+describe("runImport() cross-source deduplication", () => {
+  test("should skip a CSV row matching a pre-existing OFX-tagged transaction with the same description", async () => {
+    // Simulate a transaction already imported via OFX: tagged "ofx:FITID-001", with an
+    // original_description tag matching what the CSV row's description column says too.
+    const mockTxns = [
+      {
+        ttags: [
+          ["import_id", "ofx:FITID-001"],
+          ["original_description", "Groceries"],
+        ],
+        tdate: "2025-01-15",
+        tdescription: "Whole Foods",
+        tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    // The Whole Foods/Groceries row matches the OFX-tagged existing transaction (via the
+    // synthetic same-source fingerprint) and is skipped; the other two rows are new.
+    expect(result.parsed).toBe(3);
+    expect(result.skipped).toBe(1);
+    expect(result.imported).toBe(2);
+  });
+
+  test("should flag as a possible duplicate, not silently import, a CSV row colliding with an OFX-tagged transaction whose description differs", async () => {
+    // The OFX <MEMO> and the CSV description column disagree for the same real-world
+    // transaction -- common across bank export formats. The exact synthetic fingerprint
+    // therefore misses, but the weak (account, date, amount) fallback must still catch it.
+    const mockTxns = [
+      {
+        ttags: [
+          ["import_id", "ofx:FITID-001"],
+          ["original_description", "POS DEBIT WHOLEFDS #1234"],
+        ],
+        tdate: "2025-01-15",
+        tdescription: "Whole Foods",
+        tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    // Not written (would otherwise duplicate the OFX-imported transaction), but surfaced
+    // for manual review rather than silently dropped or silently double-written.
+    expect(result.parsed).toBe(3);
+    expect(result.imported).toBe(2);
+    expect(result.possibleDuplicates).toHaveLength(1);
+  });
+});
+
+// ── Backfill tests: writing import_id/original_description onto an existing entry ─
+
+describe("runImport() backfill", () => {
+  // An untagged transaction whose original_description ("SOME OTHER TEXT") won't match
+  // SIMPLE_CSV's first row's own description ("Groceries") -- an unambiguous weak match
+  // (it's the only Jan 15 -45.00 entry), so backfill: true should rewrite it in place.
+  const EXISTING_FILE_CONTENT = [
+    "2025-01-01 * Opening Balance",
+    "    assets:bank:checking                                            1000.00 USD",
+    "    equity:opening-balances                                        -1000.00 USD",
+    "",
+    "2025-01-15 * Whole Foods",
+    "    ; original_description: SOME OTHER TEXT",
+    "    assets:bank:checking                                              -45.00 USD",
+    "    expenses:uncategorized                                             45.00 USD",
+    "",
+  ].join("\n");
+  const HEADER_LINE = 5;
+
+  function mockExistingUntaggedTxn() {
+    const monthlyFile = join(LEDGER, "2025", "01.journal");
+    mkdirSync(join(LEDGER, "2025"), { recursive: true });
+    writeFileSync(monthlyFile, EXISTING_FILE_CONTENT);
+
+    const mockTxns = [
+      {
+        ttags: [["original_description", "SOME OTHER TEXT"]],
+        tdate: "2025-01-15",
+        tdescription: "Whole Foods",
+        tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
+        tsourcepos: [{ sourceName: "ledger/2025/01.journal", sourceLine: HEADER_LINE }, {}],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    return monthlyFile;
+  }
+
+  test("should rewrite the matched transaction's tags on disk when backfill is true", async () => {
+    const monthlyFile = mockExistingUntaggedTxn();
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      backfill: true,
+      ...BUCKETS,
+    });
+
+    expect(result.possibleDuplicates).toHaveLength(0);
+    expect(result.backfilled).toHaveLength(1);
+    expect(result.backfilled[0].description).toBe("Groceries");
+    // The other two rows (salary, coffee) are still genuinely new.
+    expect(result.imported).toBe(2);
+
+    const content = readFileSync(monthlyFile, "utf-8");
+    expect(content).toContain("; import_id: csv:");
+    expect(content).toContain("; original_description: Groceries");
+    expect(content).not.toContain("SOME OTHER TEXT");
+    // The rest of the file (the opening balance transaction) is untouched.
+    expect(content).toContain("2025-01-01 * Opening Balance");
+  });
+
+  test("should not touch the ledger and should report a possible duplicate when backfill is omitted", async () => {
+    const monthlyFile = mockExistingUntaggedTxn();
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(result.backfilled).toHaveLength(0);
+    expect(result.possibleDuplicates).toHaveLength(1);
+    // The existing entry itself is untouched (the other two genuinely-new rows are still
+    // appended to the same monthly file, so the file as a whole does grow, each with their
+    // own new import_id tag -- only the pre-existing "Whole Foods" entry must stay bare).
+    const content = readFileSync(monthlyFile, "utf-8");
+    const wholeFoodsBlock = content.slice(content.indexOf("2025-01-15 * Whole Foods"), content.indexOf("2025-01-16"));
+    expect(wholeFoodsBlock).toContain("; original_description: SOME OTHER TEXT");
+    expect(wholeFoodsBlock).not.toContain("import_id");
+  });
+
+  test("should not write anything during a dry run, even with backfill true", async () => {
+    const monthlyFile = mockExistingUntaggedTxn();
+
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      backfill: true,
+      dry_run: true,
+      ...BUCKETS,
+    });
+
+    expect(result.dryRun).toBe(true);
+    // Previewed as what WOULD be backfilled, without writing anything.
+    expect(result.backfilled).toHaveLength(1);
+    expect(readFileSync(monthlyFile, "utf-8")).toBe(EXISTING_FILE_CONTENT);
+  });
+
+  test("should roll back the backfill edit and abort the whole import when hledger check fails", async () => {
+    const monthlyFile = join(LEDGER, "2025", "01.journal");
+    mkdirSync(join(LEDGER, "2025"), { recursive: true });
+    writeFileSync(monthlyFile, EXISTING_FILE_CONTENT);
+
+    const mockTxns = [
+      {
+        ttags: [["original_description", "SOME OTHER TEXT"]],
+        tdate: "2025-01-15",
+        tdescription: "Whole Foods",
+        tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
+        tsourcepos: [{ sourceName: "ledger/2025/01.journal", sourceLine: HEADER_LINE }, {}],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      if (cmd[1] === "check") return makeMockProc(1, "", "unbalanced transaction");
+      return makeMockProc(0);
+    });
+
+    await expect(
+      runImport({
+        file_path: "files/statement.csv",
+        account: ACCOUNT,
+        currency: "USD",
+        backfill: true,
+        ...BUCKETS,
+      }),
+    ).rejects.toThrow(/Backfill reverted/);
+
+    // The backfill edit is rolled back byte-for-byte, and the whole import aborts before
+    // the genuinely-new rows (which would otherwise be added by addTransactions) are written.
+    expect(readFileSync(monthlyFile, "utf-8")).toBe(EXISTING_FILE_CONTENT);
   });
 });
 
@@ -717,6 +1126,7 @@ describe("renderImportResult()", () => {
     dryRun: false,
     sample: ["2025-01-15 Whole Foods\n  Assets:Bank  -45.00 EUR"],
     possibleDuplicates: [],
+    backfilled: [],
     detection: {
       preambleRows: 2,
       preamble: ["Account statement", "Period: Jan 2025"],
@@ -765,6 +1175,29 @@ describe("renderImportResult()", () => {
     expect(renderImportResult(full)).toContain("Written to: /ws/ledger/2025/01.journal");
   });
 
+  test("should list backfilled entries with a 'Backfilled' header when not a dry run", () => {
+    const withBackfill: ImportResult = {
+      ...full,
+      backfilled: [
+        { date: "2025-01-15", amount: -45, currency: "EUR", payee: "Whole Foods", description: "Groceries" },
+      ],
+    };
+    const text = renderImportResult(withBackfill);
+    expect(text).toContain("Backfilled import_id + original_description onto 1 existing matched transaction(s)");
+    expect(text).toContain("2025-01-15 Whole Foods | Groceries -- -45.00 EUR");
+  });
+
+  test("should say 'Would backfill' instead of 'Backfilled' during a dry run", () => {
+    const dryWithBackfill: ImportResult = {
+      ...full,
+      dryRun: true,
+      transactions: undefined,
+      backfilled: [{ date: "2025-01-15", amount: -45, currency: "EUR", payee: "Whole Foods" }],
+    };
+    const text = renderImportResult(dryWithBackfill);
+    expect(text).toContain("Would backfill import_id + original_description onto 1 existing matched transaction(s)");
+  });
+
   test("should mark a dry run and omit the written-to line", () => {
     const dry: ImportResult = { ...full, dryRun: true, imported: 0, transactions: undefined };
     const text = renderImportResult(dry);
@@ -783,6 +1216,7 @@ describe("renderImportResult()", () => {
       dryRun: false,
       sample: [],
       possibleDuplicates: [],
+      backfilled: [],
     };
     const text = renderImportResult(minimal);
     expect(text).not.toContain("Balancing");

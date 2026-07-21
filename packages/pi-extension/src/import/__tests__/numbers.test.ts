@@ -216,4 +216,12 @@ describe("detectNumberFormat()", () => {
     const samples = ["1.234,56", "1,234.56"];
     expect(() => detectNumberFormat(samples)).toThrow(/ambiguous|number_format/i);
   });
+
+  test("should throw when the sample has multi-group evidence for both dot and comma grouping with no decimal evidence", () => {
+    // "1.234.567" implies dot-as-thousands (German-style multi-group); "1,234,567" implies
+    // comma-as-thousands (US-style multi-group). Neither sample carries decimal evidence, so
+    // there's no way to tell which grouping convention the file actually uses.
+    const samples = ["1.234.567", "1,234,567"];
+    expect(() => detectNumberFormat(samples)).toThrow(/ambiguous|number_format/i);
+  });
 });

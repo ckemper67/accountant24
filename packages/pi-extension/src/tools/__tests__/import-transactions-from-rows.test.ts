@@ -22,6 +22,7 @@ const RESULT: ImportResult = {
   dryRun: false,
   sample: ["2025-01-15 Rewe\n  Assets:Bank  -12.50 EUR"],
   possibleDuplicates: [],
+  backfilled: [],
   transactions: [{ transactionText: "tx", fullFilePath: "/ws/ledger/2025/01.journal" }],
 };
 

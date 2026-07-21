@@ -134,6 +134,37 @@ describe("runRowImport() deduplication", () => {
     expect(second.imported).toBe(0);
     expect(second.skipped).toBe(3);
   });
+
+  test("should flag as a possible duplicate, not silently re-import, a pdf-tagged transaction whose transcribed description drifted between runs", async () => {
+    // LLM transcription of the same PDF statement is not guaranteed byte-identical between
+    // two calls (wording, whitespace, OCR variance) -- so even a same-source ("pdf:") tag
+    // can't be trusted for exact matching against itself. The weak (account, date, amount)
+    // fallback must still catch the re-import.
+    const mockTxns = [
+      {
+        ttags: [
+          ["import_id", "pdf:deadbeef0"],
+          ["original_description", "Groceries store"], // slightly different wording this time
+        ],
+        tdate: "2025-01-15",
+        tdescription: "Whole Foods",
+        tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
+      },
+    ];
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    // US_ROWS[0] is the same Whole Foods/Groceries/-45.00/2025-01-15 transaction, but the
+    // "Groceries" description text doesn't match "Groceries store" exactly.
+    const result = await runRowImport({ account: ACCOUNT, rows: US_ROWS, currency: "USD", ...BUCKETS });
+
+    expect(result.parsed).toBe(3);
+    expect(result.imported).toBe(2);
+    expect(result.possibleDuplicates).toHaveLength(1);
+  });
 });
 
 describe("runRowImport() error handling", () => {

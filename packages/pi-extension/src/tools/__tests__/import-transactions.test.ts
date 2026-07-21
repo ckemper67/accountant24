@@ -23,6 +23,7 @@ const RESULT: ImportResult = {
   dryRun: false,
   sample: [],
   possibleDuplicates: [],
+  backfilled: [],
   transactions: [{ transactionText: "tx", fullFilePath: "/ws/ledger/2025/01.journal" }],
 };
 
