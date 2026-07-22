@@ -51,7 +51,7 @@ export function trackQuit(): void {
 
 /** Record a provider becoming usable. The first-ever connect is the moment
  *  onboarding actually succeeded (App swaps to the chat once a model exists). */
-export function trackProviderConnected(provider: string, method: "oauth" | "api_key" | "ollama"): void {
+export function trackProviderConnected(provider: string, method: "oauth" | "api_key" | "ollama" | "litellm"): void {
   trackOnce("onboarding_completed", { provider, method });
 }
 
