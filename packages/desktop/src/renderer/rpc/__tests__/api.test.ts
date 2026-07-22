@@ -630,6 +630,39 @@ describe("authApi", () => {
     });
   });
 
+  describe("detectLiteLLM()", () => {
+    it("should invoke 'auth_detect_litellm' with { baseUrl } and resolve the info", async () => {
+      const info = { type: "litellm", running: true, models: [] };
+      bridge.setHandler("auth_detect_litellm", () => info);
+
+      const result = await authApi.detectLiteLLM("http://localhost:4000");
+
+      expect(result).toEqual(info);
+      expect(onlyPayload("auth_detect_litellm")).toEqual({ baseUrl: "http://localhost:4000" });
+    });
+  });
+
+  describe("addAllLiteLLM()", () => {
+    it("should invoke 'auth_add_all_litellm' with { baseUrl } and resolve the count", async () => {
+      bridge.setHandler("auth_add_all_litellm", () => ({ type: "ok", count: 2 }));
+
+      const result = await authApi.addAllLiteLLM("http://localhost:4000");
+
+      expect(result).toEqual({ type: "ok", count: 2 });
+      expect(onlyPayload("auth_add_all_litellm")).toEqual({ baseUrl: "http://localhost:4000" });
+    });
+  });
+
+  describe("removeLiteLLM()", () => {
+    it("should invoke 'auth_remove_litellm' with no payload", async () => {
+      bridge.setHandler("auth_remove_litellm", () => ({ type: "ok" }));
+
+      await authApi.removeLiteLLM();
+
+      expect(bridge.callsFor("auth_remove_litellm")).toEqual([undefined]);
+    });
+  });
+
   describe("login()", () => {
     it("should invoke 'auth_login' with { provider }", async () => {
       bridge.setHandler("auth_login", () => undefined);

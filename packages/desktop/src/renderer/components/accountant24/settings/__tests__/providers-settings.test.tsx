@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // IPC boundary: the providers list reads auth/settings and drives the agent
@@ -13,6 +13,8 @@ vi.mock("@/rpc/api", () => ({
     logout: vi.fn(),
     removeOllama: vi.fn(),
     addAllOllama: vi.fn(),
+    removeLiteLLM: vi.fn(),
+    addAllLiteLLM: vi.fn(),
     models: vi.fn(),
     setKey: vi.fn(),
   },
@@ -98,6 +100,8 @@ beforeEach(() => {
   vi.mocked(authApi.logout).mockResolvedValue({ type: "ok" });
   vi.mocked(authApi.removeOllama).mockResolvedValue({ type: "ok" });
   vi.mocked(authApi.addAllOllama).mockResolvedValue({ type: "ok", count: 1 });
+  vi.mocked(authApi.removeLiteLLM).mockResolvedValue({ type: "ok" });
+  vi.mocked(authApi.addAllLiteLLM).mockResolvedValue({ type: "ok", count: 1 } as never);
   vi.mocked(authApi.models).mockResolvedValue({ type: "models", models: [], providerDefaults: {} });
   vi.mocked(agentApi.restart).mockResolvedValue(undefined);
   vi.mocked(settingsApi.get).mockResolvedValue({});
@@ -111,6 +115,17 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
 });
+
+/**
+ * The provider/connect row (a SettingsRow, `data-slot="item"`) whose title is `title`.
+ * LiteLLM is always offered as a connect row, so a bare `getByRole("button", …)` can
+ * collide with it — scope button queries to a specific row through this helper.
+ */
+const rowByTitle = (title: string): HTMLElement => {
+  const el = screen.getByText(title).closest("[data-slot='item']");
+  if (!(el instanceof HTMLElement)) throw new Error(`No provider row found for "${title}"`);
+  return el;
+};
 
 /** Return the given names ordered by their position in the DOM. */
 const domOrder = (...names: string[]) =>
@@ -191,7 +206,9 @@ describe("ProvidersSettings", () => {
       );
       render(<ProvidersSettings />);
       await screen.findByText("OpenAI (env)");
-      expect(screen.queryByRole("button")).not.toBeInTheDocument();
+      // The provider's own row offers no action; the always-present LiteLLM connect
+      // row is separate and does not count against this.
+      expect(within(rowByTitle("OpenAI (env)")).queryByRole("button")).not.toBeInTheDocument();
     });
 
     it("should offer Disconnect for a configured Ollama provider even when not removable", async () => {
@@ -246,8 +263,8 @@ describe("ProvidersSettings", () => {
       vi.mocked(authApi.status).mockResolvedValue(status([]));
       vi.mocked(authApi.detectOllama).mockResolvedValue(ollamaInfo({ running: true, models: ["llama3"] }));
       render(<ProvidersSettings />);
-      expect(await screen.findByRole("button", { name: "Connect" })).toBeInTheDocument();
-      expect(screen.getByText("Ollama")).toBeInTheDocument();
+      await screen.findByText("Ollama");
+      expect(within(rowByTitle("Ollama")).getByRole("button", { name: "Connect" })).toBeInTheDocument();
     });
 
     it("should not offer the Ollama row when Ollama isn't running", async () => {
@@ -257,7 +274,7 @@ describe("ProvidersSettings", () => {
       vi.mocked(authApi.detectOllama).mockResolvedValue(ollamaInfo({ running: false, models: ["llama3"] }));
       render(<ProvidersSettings />);
       await screen.findByText("Anthropic");
-      expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Ollama")).not.toBeInTheDocument();
     });
 
     it("should not offer the Ollama row when Ollama runs but has no models", async () => {
@@ -267,7 +284,7 @@ describe("ProvidersSettings", () => {
       vi.mocked(authApi.detectOllama).mockResolvedValue(ollamaInfo({ running: true, models: [] }));
       render(<ProvidersSettings />);
       await screen.findByText("Anthropic");
-      expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Ollama")).not.toBeInTheDocument();
     });
 
     it("should not offer a separate connect row when Ollama is already connected", async () => {
@@ -277,16 +294,123 @@ describe("ProvidersSettings", () => {
       vi.mocked(authApi.detectOllama).mockResolvedValue(ollamaInfo({ running: true, models: ["llama3"] }));
       render(<ProvidersSettings />);
       await screen.findByText("Ollama");
-      expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+      const ollamaRow = rowByTitle("Ollama");
+      expect(within(ollamaRow).queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+      expect(within(ollamaRow).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
     });
 
     it("should register all local models when Ollama is connected", async () => {
       vi.mocked(authApi.status).mockResolvedValue(status([]));
       vi.mocked(authApi.detectOllama).mockResolvedValue(ollamaInfo({ running: true, models: ["llama3"] }));
       render(<ProvidersSettings />);
-      fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+      await screen.findByText("Ollama");
+      fireEvent.click(within(rowByTitle("Ollama")).getByRole("button", { name: "Connect" }));
       await waitFor(() => expect(authApi.addAllOllama).toHaveBeenCalledTimes(1));
+    });
+  });
+
+  describe("LiteLLM row", () => {
+    it("should always offer a LiteLLM connect row until it is configured", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      render(<ProvidersSettings />);
+      await screen.findByText("LiteLLM");
+      expect(within(rowByTitle("LiteLLM")).getByRole("button", { name: "Connect" })).toBeInTheDocument();
+    });
+
+    it("should register the proxy's models after entering a base URL", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      vi.mocked(authApi.addAllLiteLLM).mockResolvedValue({ type: "ok", count: 3 } as never);
+      render(<ProvidersSettings />);
+      await screen.findByText("LiteLLM");
+      // Reveal the base-URL field, fill it, then confirm.
+      fireEvent.click(within(rowByTitle("LiteLLM")).getByRole("button", { name: "Connect" }));
+      fireEvent.change(screen.getByPlaceholderText(/Base URL/), { target: { value: "http://localhost:4000" } });
+      fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+      await waitFor(() => expect(authApi.addAllLiteLLM).toHaveBeenCalledWith("http://localhost:4000"));
+      await waitFor(() => expect(agentApi.restart).toHaveBeenCalledTimes(1));
+    });
+
+    it("should surface an error and keep the form open when the proxy connect fails", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      vi.mocked(authApi.addAllLiteLLM).mockResolvedValue({ type: "error", message: "unreachable" } as never);
+      render(<ProvidersSettings />);
+      await screen.findByText("LiteLLM");
+      fireEvent.click(within(rowByTitle("LiteLLM")).getByRole("button", { name: "Connect" }));
+      fireEvent.change(screen.getByPlaceholderText(/Base URL/), { target: { value: "http://localhost:4000" } });
+      fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+      expect(await screen.findByText("unreachable", { exact: false })).toBeInTheDocument();
+      expect(agentApi.restart).not.toHaveBeenCalled();
+    });
+
+    it("should remove LiteLLM via its own path rather than logout", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(
+        status([row({ provider: "litellm", displayName: "LiteLLM", configured: true, removable: false })]),
+      );
+      render(<ProvidersSettings />);
+      fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+
+      await waitFor(() => expect(authApi.removeLiteLLM).toHaveBeenCalledTimes(1));
+      expect(authApi.logout).not.toHaveBeenCalled();
+      expect(agentApi.restart).toHaveBeenCalledTimes(1);
+    });
+
+    it("should connect on pressing Enter in the base URL field", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      render(<ProvidersSettings />);
+      await screen.findByText("LiteLLM");
+      fireEvent.click(within(rowByTitle("LiteLLM")).getByRole("button", { name: "Connect" }));
+      const input = screen.getByPlaceholderText(/Base URL/);
+      fireEvent.change(input, { target: { value: "http://localhost:4000" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      await waitFor(() => expect(authApi.addAllLiteLLM).toHaveBeenCalledWith("http://localhost:4000"));
+    });
+
+    it("should not connect on pressing a non-Enter key in the base URL field", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      render(<ProvidersSettings />);
+      await screen.findByText("LiteLLM");
+      fireEvent.click(within(rowByTitle("LiteLLM")).getByRole("button", { name: "Connect" }));
+      const input = screen.getByPlaceholderText(/Base URL/);
+      fireEvent.change(input, { target: { value: "http://localhost:4000" } });
+      fireEvent.keyDown(input, { key: "a" });
+
+      expect(authApi.addAllLiteLLM).not.toHaveBeenCalled();
+    });
+
+    it("should not connect on pressing Enter while the base URL is blank", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      render(<ProvidersSettings />);
+      await screen.findByText("LiteLLM");
+      fireEvent.click(within(rowByTitle("LiteLLM")).getByRole("button", { name: "Connect" }));
+      fireEvent.keyDown(screen.getByPlaceholderText(/Base URL/), { key: "Enter" });
+
+      expect(authApi.addAllLiteLLM).not.toHaveBeenCalled();
+    });
+
+    it("should close the form without connecting when Cancel is clicked", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      render(<ProvidersSettings />);
+      await screen.findByText("LiteLLM");
+      fireEvent.click(within(rowByTitle("LiteLLM")).getByRole("button", { name: "Connect" }));
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+      expect(screen.queryByPlaceholderText(/Base URL/)).not.toBeInTheDocument();
+      expect(authApi.addAllLiteLLM).not.toHaveBeenCalled();
+    });
+
+    it("should show a default error message when the connect failure carries none", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      vi.mocked(authApi.addAllLiteLLM).mockResolvedValue({ type: "error" } as never);
+      render(<ProvidersSettings />);
+      await screen.findByText("LiteLLM");
+      fireEvent.click(within(rowByTitle("LiteLLM")).getByRole("button", { name: "Connect" }));
+      fireEvent.change(screen.getByPlaceholderText(/Base URL/), { target: { value: "http://localhost:4000" } });
+      fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+      expect(await screen.findByText("Failed to connect LiteLLM", { exact: false })).toBeInTheDocument();
     });
   });
 
@@ -465,6 +589,19 @@ describe("ProvidersSettings", () => {
       // The new provider's model is unioned into the scoped list (spec: adding a
       // provider must not leave its models hidden), ordered by the full model list.
       expect(settingsApi.set).toHaveBeenCalledWith({ enabledModels: ["openai/gpt-4", "groq/llama"] });
+    });
+
+    it("should close the API key dialog without saving when Cancel is clicked", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(
+        status([row({ provider: "groq", displayName: "Groq", configured: false, oauth: false })]),
+      );
+      render(<ProvidersSettings />);
+      fireEvent.click(await screen.findByRole("button", { name: "API Key" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+      await waitFor(() => expect(screen.queryByText("Connect Groq")).not.toBeInTheDocument());
+      expect(authApi.setKey).not.toHaveBeenCalled();
+      expect(agentApi.restart).not.toHaveBeenCalled();
     });
 
     it("should leave the enabled-model list untouched when everything was already enabled", async () => {
@@ -686,7 +823,7 @@ describe("ProvidersSettings", () => {
       vi.mocked(authApi.detectOllama).mockRejectedValue(new Error("no ollama"));
       render(<ProvidersSettings />);
       await screen.findByText("Anthropic");
-      expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Ollama")).not.toBeInTheDocument();
     });
   });
 
@@ -697,11 +834,12 @@ describe("ProvidersSettings", () => {
       vi.mocked(authApi.addAllOllama).mockResolvedValue({ type: "error", message: "daemon down" } as never);
 
       render(<ProvidersSettings />);
-      fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+      await screen.findByText("Ollama");
+      fireEvent.click(within(rowByTitle("Ollama")).getByRole("button", { name: "Connect" }));
 
       expect(await screen.findByText("daemon down", { exact: false })).toBeInTheDocument();
       // The button returns to its idle label so the user can retry.
-      expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+      expect(within(rowByTitle("Ollama")).getByRole("button", { name: "Connect" })).toBeEnabled();
       expect(agentApi.restart).not.toHaveBeenCalled();
     });
   });

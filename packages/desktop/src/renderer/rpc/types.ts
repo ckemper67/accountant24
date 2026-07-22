@@ -113,6 +113,25 @@ export interface OllamaInfo {
   models: string[];
 }
 
+/** A model discovered on a LiteLLM proxy (the subset written to models.json). The
+ *  single source of truth for this shape: the main process imports it too, so the
+ *  written record and the rendered record can't drift. */
+export interface LiteLLMModel {
+  id: string;
+  name: string;
+  input: ("text" | "image")[];
+  reasoning: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+}
+
+export interface LiteLLMInfo {
+  type: "litellm";
+  running: boolean;
+  models: LiteLLMModel[];
+}
+
 // Streamed during an interactive OAuth login.
 export type AuthEvent =
   | { type: "auth"; url: string; instructions?: string }
