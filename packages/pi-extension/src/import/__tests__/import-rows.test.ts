@@ -76,10 +76,10 @@ describe("runRowImport() real import", () => {
     expect(content).toContain("Starbucks");
   });
 
-  test("should tag each transaction with a pdf-namespaced import_id", async () => {
+  test("should tag each transaction with an import_id", async () => {
     await runRowImport({ account: ACCOUNT, rows: US_ROWS, currency: "USD", ...BUCKETS });
     const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
-    const ids = content.match(/; import_id: pdf:/g);
+    const ids = content.match(/; import_id: /g);
     expect(ids).toHaveLength(3);
   });
 
@@ -116,7 +116,7 @@ describe("runRowImport() deduplication", () => {
   test("should skip rows already present on re-import", async () => {
     await runRowImport({ account: ACCOUNT, rows: US_ROWS, currency: "USD", ...BUCKETS });
     const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
-    const ids = [...content.matchAll(/; import_id: (pdf:[^\s\n]+)/g)].map((m) => m[1]);
+    const ids = [...content.matchAll(/; import_id: (\S+)/g)].map((m) => m[1]);
     expect(ids).toHaveLength(3);
 
     const mockTxns = ids.map((id) => ({
@@ -135,17 +135,13 @@ describe("runRowImport() deduplication", () => {
     expect(second.skipped).toBe(3);
   });
 
-  test("should flag as a possible duplicate, not silently re-import, a pdf-tagged transaction whose transcribed description drifted between runs", async () => {
+  test("should still recognize a re-import even when the transcribed description drifted between runs", async () => {
     // LLM transcription of the same PDF statement is not guaranteed byte-identical between
-    // two calls (wording, whitespace, OCR variance) -- so even a same-source ("pdf:") tag
-    // can't be trusted for exact matching against itself. The weak (account, date, amount)
-    // fallback must still catch the re-import.
+    // two calls (wording, whitespace, OCR variance). Since dedup is keyed on (account, date,
+    // amount) only -- never description -- this drift can't cause a false "new" match.
     const mockTxns = [
       {
-        ttags: [
-          ["import_id", "pdf:deadbeef0"],
-          ["original_description", "Groceries store"], // slightly different wording this time
-        ],
+        ttags: [],
         tdate: "2025-01-15",
         tdescription: "Whole Foods",
         tpostings: [{ paccount: ACCOUNT, pamount: [{ aquantity: { decimalMantissa: -4500, decimalPlaces: 2 } }] }],
@@ -157,13 +153,13 @@ describe("runRowImport() deduplication", () => {
       return makeMockProc(0);
     });
 
-    // US_ROWS[0] is the same Whole Foods/Groceries/-45.00/2025-01-15 transaction, but the
-    // "Groceries" description text doesn't match "Groceries store" exactly.
+    // US_ROWS[0] is the same Whole Foods/-45.00/2025-01-15 transaction; the existing
+    // entry's description text ("Whole Foods") need not match this row's ("Groceries").
     const result = await runRowImport({ account: ACCOUNT, rows: US_ROWS, currency: "USD", ...BUCKETS });
 
     expect(result.parsed).toBe(3);
+    expect(result.skipped).toBe(1);
     expect(result.imported).toBe(2);
-    expect(result.possibleDuplicates).toHaveLength(1);
   });
 });
 

@@ -99,17 +99,6 @@ const Params = Type.Object({
         "the first few transactions. Use this to verify the import looks correct before committing.",
     }),
   ),
-  backfill: Type.Optional(
-    Type.Boolean({
-      description:
-        "If true, a row that unambiguously matches an existing untagged/cross-source/pdf-tagged transaction " +
-        "backfills that transaction's import_id and original_description tags instead of just being reported " +
-        "as a possible duplicate -- so a future re-import of the same statement matches it exactly. Only " +
-        "those two tags are touched; the transaction's payee/description and every other tag are left as-is. " +
-        "Ambiguous matches (multiple existing candidates share the account/date/amount) are still reported " +
-        "as possibleDuplicates, never guessed at. Run a dry_run first to review what would be backfilled.",
-    }),
-  ),
 });
 
 const LABEL = "Import Transactions";
@@ -126,7 +115,6 @@ const PROMPT_GUIDELINES = [
   "If a required column is not found, supply column_map with the exact header names from the CSV.",
   "Leading metadata/preamble rows before the header are skipped automatically; only set skip_rows if the wrong header line is picked.",
   "If the tool errors that it cannot determine the format, or that the content doesn't match, read the file yourself to identify its real format, then retry with format set explicitly.",
-  "If the result includes possibleDuplicates, they were NOT written -- their (account, date, amount) collided with an existing transaction whose description could not be confirmed. Review them: use add_transactions for any that are genuinely new, or re-run with backfill:true to tag the matched existing entries if they're confirmed duplicates (this only rewrites their import_id/original_description tags, nothing else).",
 ];
 
 export const importTransactionsTool: ToolDefinition<typeof Params, ImportResult> = {
@@ -159,7 +147,6 @@ export const importTransactionsTool: ToolDefinition<typeof Params, ImportResult>
         uncategorized_expense_account: params.uncategorized_expense_account,
         uncategorized_income_account: params.uncategorized_income_account,
         dry_run: params.dry_run,
-        backfill: params.backfill,
       },
       signal,
     );

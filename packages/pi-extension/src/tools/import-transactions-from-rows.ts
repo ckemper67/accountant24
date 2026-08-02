@@ -17,11 +17,7 @@ const Row = Type.Object({
   }),
   description: Type.Optional(
     Type.String({
-      description:
-        "Transaction description / memo, if any. Transcribe verbatim from the statement text -- exact wording " +
-        "matters for deduplication: re-importing the same statement later matches on (account, date, amount) " +
-        "when the description text differs at all between runs, which only flags a possible duplicate for " +
-        "review rather than skipping it outright.",
+      description: "Transaction description / memo, if any. Transcribe verbatim from the statement text.",
     }),
   ),
   payee: Type.Optional(Type.String({ description: "Payee / merchant name, if identifiable" })),
@@ -89,17 +85,6 @@ const Params = Type.Object({
         "Use this to verify the rows look correct before committing.",
     }),
   ),
-  backfill: Type.Optional(
-    Type.Boolean({
-      description:
-        "If true, a row that unambiguously matches an existing untagged/cross-source/pdf-tagged transaction " +
-        "backfills that transaction's import_id and original_description tags instead of just being reported " +
-        "as a possible duplicate -- so a future re-import of the same statement matches it exactly. Only " +
-        "those two tags are touched; the transaction's payee/description and every other tag are left as-is. " +
-        "Ambiguous matches (multiple existing candidates share the account/date/amount) are still reported " +
-        "as possibleDuplicates, never guessed at. Run a dry_run first to review what would be backfilled.",
-    }),
-  ),
 });
 
 const LABEL = "Import Transactions From Rows";
@@ -109,8 +94,8 @@ const PROMPT_SNIPPET =
 
 const PROMPT_GUIDELINES = [
   "Use this for PDF or image statements: call extract_text first, read the transactions, then pass them here as rows.",
-  "For a long statement, import in page-sized batches rather than one huge call; dedup makes re-runs and overlaps safe -- overlapping rows are skipped outright when the description matches exactly, or held back and reported as possibleDuplicates for manual review when it doesn't (or backfilled onto the matched entry if backfill:true and the match is unambiguous), but never silently double-written.",
-  "Transcribe dates, amounts, AND descriptions VERBATIM -- do not reformat, convert to ISO, reword, or change decimal/thousands separators. The tool parses locale formats deterministically; if the auto-detect looks wrong in dry_run, pass number_format/date_format instead of editing the values. Verbatim descriptions also keep re-imports of the same statement matching exactly instead of falling back to the weaker possible-duplicate check.",
+  "For a long statement, import in page-sized batches rather than one huge call; dedup is keyed on (account, date, amount) so re-runs and overlaps are safe -- overlapping rows are skipped, never double-written.",
+  "Transcribe dates, amounts, AND descriptions VERBATIM -- do not reformat, convert to ISO, reword, or change decimal/thousands separators. The tool parses locale formats deterministically; if the auto-detect looks wrong in dry_run, pass number_format/date_format instead of editing the values.",
   "With only a few rows, auto-detection may be ambiguous -- pass number_format and date_format explicitly.",
   "Run with dry_run:true first to confirm parsed counts, detected formats, and a sample.",
   "uncategorized_expense_account and uncategorized_income_account are required: pass accounts that already exist in the injected list (the tool does not create accounts). Pick them before calling, even for dry_run.",
@@ -143,7 +128,6 @@ export const importTransactionsFromRowsTool: ToolDefinition<typeof Params, Impor
         uncategorized_expense_account: params.uncategorized_expense_account,
         uncategorized_income_account: params.uncategorized_income_account,
         dry_run: params.dry_run,
-        backfill: params.backfill,
       },
       signal,
     );
