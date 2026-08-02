@@ -5,7 +5,6 @@ export {
   type BulkEditResult,
   bulkEditTransactions,
 } from "./bulk-edit";
-export { type BriefingData, fetchBriefingData } from "./briefing";
 export { HledgerCommandError, HledgerNotFoundError, hledgerCheck, runHledger, tryRunHledger } from "./hledger";
 export { resolveSafePath } from "./paths";
 export { listPayees } from "./payees";

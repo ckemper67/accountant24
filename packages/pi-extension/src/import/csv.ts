@@ -1,12 +1,44 @@
 // CSV parsing and column resolution for bank statement imports.
 //
-// Reuses parseCSVLine from ledger/briefing.ts so the quoting logic is shared.
 // Supports:
 //   - Auto-detection of common column headers (date, amount, description, payee, currency).
 //   - Explicit column_map override for non-standard headers.
 //   - Separate debit/credit columns collapsed to a single signed amount.
 
-import { parseCSVLine } from "../ledger/briefing";
+// ── RFC 4180 line parsing ──────────────────────────────────────────────
+
+/** Split one CSV line into fields, honoring double-quoted fields with "" as an escaped quote. */
+export function parseCSVLine(line: string): string[] {
+  const fields: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < line.length && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ",") {
+        fields.push(current);
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+  }
+  fields.push(current);
+  return fields;
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -80,25 +112,29 @@ const PAYEE_HEADERS = [
 ];
 const CURRENCY_HEADERS = ["currency", "waehrung", "ccy", "currency code"];
 
-function matchHeader(headers: string[], candidates: string[]): number {
+/** Resolve a column index: an explicit key matches by header name then by 0-based index
+ *  string; otherwise the first matching candidate header name wins. -1 if unresolved. */
+function tryResolveIndex(headers: string[], userKey: string | undefined, candidates: string[]): number {
   const normalized = headers.map((h) => h.trim().toLowerCase());
-  for (const candidate of candidates) {
+  const wanted = userKey !== undefined ? [userKey] : candidates;
+  for (const candidate of wanted) {
     const idx = normalized.indexOf(candidate.toLowerCase());
     if (idx !== -1) return idx;
+  }
+  if (userKey !== undefined) {
+    const asIndex = Number.parseInt(userKey, 10);
+    if (!Number.isNaN(asIndex) && asIndex >= 0 && asIndex < headers.length) return asIndex;
   }
   return -1;
 }
 
+/** Like tryResolveIndex, but throws when an explicit userKey doesn't resolve to anything. */
 function resolveColumnIndex(headers: string[], userKey: string | undefined, candidates: string[]): number {
-  if (userKey !== undefined) {
-    // Explicit key: match by header name, then by 0-based index string.
-    const idx = matchHeader(headers, [userKey]);
-    if (idx !== -1) return idx;
-    const asIndex = Number.parseInt(userKey, 10);
-    if (!Number.isNaN(asIndex) && asIndex >= 0 && asIndex < headers.length) return asIndex;
+  const idx = tryResolveIndex(headers, userKey, candidates);
+  if (idx === -1 && userKey !== undefined) {
     throw new Error(`column_map key "${userKey}" not found in CSV headers: ${headers.join(", ")}`);
   }
-  return matchHeader(headers, candidates);
+  return idx;
 }
 
 // ── Header detection ───────────────────────────────────────────────
@@ -106,18 +142,6 @@ function resolveColumnIndex(headers: string[], userKey: string | undefined, cand
 // How many leading lines to scan for the real header (bank exports often prepend
 // account/metadata rows before it).
 const HEADER_SCAN_LIMIT = 25;
-
-/** Non-throwing column resolve, used to score candidate header lines. */
-function tryResolveIndex(headers: string[], userKey: string | undefined, candidates: string[]): number {
-  if (userKey !== undefined) {
-    const idx = matchHeader(headers, [userKey]);
-    if (idx !== -1) return idx;
-    const asIndex = Number.parseInt(userKey, 10);
-    if (!Number.isNaN(asIndex) && asIndex >= 0 && asIndex < headers.length) return asIndex;
-    return -1;
-  }
-  return matchHeader(headers, candidates);
-}
 
 /** A line is the header if it resolves a date column plus at least one amount-ish column. */
 function looksLikeHeader(headers: string[], columnMap?: ColumnMap): boolean {
@@ -226,9 +250,4 @@ export function parseCsvWithMeta(text: string, columnMap?: ColumnMap, skipRows?:
   }
 
   return { rows, headers, headerRowIndex: headerRow, preamble };
-}
-
-/** Convenience wrapper returning only the rows (see parseCsvWithMeta for detection metadata). */
-export function parseCsv(text: string, columnMap?: ColumnMap, skipRows?: number): StatementRow[] {
-  return parseCsvWithMeta(text, columnMap, skipRows).rows;
 }

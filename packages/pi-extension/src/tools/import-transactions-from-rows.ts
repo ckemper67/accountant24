@@ -2,6 +2,14 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ImportResult } from "../import/import";
 import { renderImportResult, runRowImport } from "../import/import";
+import {
+  DateFormatParam,
+  NumberFormatParam,
+  RECATEGORIZE_GUIDELINE,
+  UNCATEGORIZED_ACCOUNTS_GUIDELINE,
+  UncategorizedExpenseAccountParam,
+  UncategorizedIncomeAccountParam,
+} from "./import-tool-shared";
 
 const Row = Type.Object({
   date: Type.String({
@@ -38,46 +46,10 @@ const Params = Type.Object({
   currency: Type.Optional(
     Type.String({ description: "Statement currency code (e.g. USD, EUR) used for rows without their own currency." }),
   ),
-  uncategorized_expense_account: Type.String({
-    description:
-      "REQUIRED. Existing account that outflow (negative) rows balance to, in the workspace's own naming " +
-      "(e.g. expenses:uncategorized) -- take it from the injected account list. The tool does not create " +
-      "accounts and fails if it is not declared. If the statement has no outflows, pass any declared expense account.",
-  }),
-  uncategorized_income_account: Type.String({
-    description:
-      "REQUIRED. Existing account that inflow (positive) rows balance to (e.g. income:uncategorized), from the " +
-      "injected account list. For a credit-card/liability statement, point both at an expense catch-all since " +
-      "charges are spending, not income. If the statement has no inflows, pass any declared income account.",
-  }),
-  number_format: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal("us", { description: "US/UK: 1,234.56 (comma thousands, dot decimal)" }),
-        Type.Literal("de", { description: "German: 1.234,56 (dot thousands, comma decimal)" }),
-        Type.Literal("fr", { description: "French/SI: 1 234,56 (space/NBSP thousands, comma decimal)" }),
-        Type.Literal("ch", { description: "Swiss: 1'234.56 (apostrophe thousands, dot decimal)" }),
-      ],
-      {
-        description:
-          "Number format override. Omit to auto-detect. With few rows, detection may be ambiguous and will " +
-          "error -- pass the statement's format explicitly. A mis-parsed amount silently corrupts the ledger.",
-      },
-    ),
-  ),
-  date_format: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal("MDY", { description: "US: MM/DD/YYYY" }),
-        Type.Literal("DMY", { description: "EU/German: DD/MM/YYYY or DD.MM.YYYY" }),
-      ],
-      {
-        description:
-          "Date order override for ambiguous dates (both components <= 12). Omit to auto-detect. " +
-          "IMPORTANT: a mis-parsed date sends the transaction to the wrong monthly file.",
-      },
-    ),
-  ),
+  uncategorized_expense_account: UncategorizedExpenseAccountParam,
+  uncategorized_income_account: UncategorizedIncomeAccountParam,
+  number_format: NumberFormatParam,
+  date_format: DateFormatParam,
   dry_run: Type.Optional(
     Type.Boolean({
       description:
@@ -98,8 +70,8 @@ const PROMPT_GUIDELINES = [
   "Transcribe dates, amounts, AND descriptions VERBATIM -- do not reformat, convert to ISO, reword, or change decimal/thousands separators. The tool parses locale formats deterministically; if the auto-detect looks wrong in dry_run, pass number_format/date_format instead of editing the values.",
   "With only a few rows, auto-detection may be ambiguous -- pass number_format and date_format explicitly.",
   "Run with dry_run:true first to confirm parsed counts, detected formats, and a sample.",
-  "uncategorized_expense_account and uncategorized_income_account are required: pass accounts that already exist in the injected list (the tool does not create accounts). Pick them before calling, even for dry_run.",
-  "After import, re-categorize the uncategorized accounts with the modify-transactions skill's bundled script (run via bash) - or the edit tool on the monthly journal files if that skill isn't installed in this build.",
+  UNCATEGORIZED_ACCOUNTS_GUIDELINE,
+  RECATEGORIZE_GUIDELINE,
 ];
 
 export const importTransactionsFromRowsTool: ToolDefinition<typeof Params, ImportResult> = {

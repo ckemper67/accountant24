@@ -1,7 +1,7 @@
 // Import pipeline for bank statements.
 //
 // Two front-ends feed one shared back-end:
-//   - runImport:    a CSV file  -> decode + parseCsv -> importStatementRows
+//   - runImport:    a CSV file  -> decode + parseCsvWithMeta -> importStatementRows
 //   - runRowImport: inline rows (e.g. an agent reading a PDF via extract_text) ->
 //                   importStatementRows
 //
@@ -135,6 +135,32 @@ interface CoreParams {
 }
 
 const MAX_SAMPLE = 5;
+
+/** The fields ImportParams and RowImportParams share verbatim, threaded into CoreParams
+ *  at each front-end's call site (each also sets its own `encoding` and format-specific
+ *  fields, e.g. the OFX branch forces `number_format: "us"`). */
+type SharedFields = Pick<
+  CoreParams,
+  | "account"
+  | "currency"
+  | "number_format"
+  | "date_format"
+  | "dry_run"
+  | "uncategorized_expense_account"
+  | "uncategorized_income_account"
+>;
+
+function sharedFields(params: SharedFields): SharedFields {
+  return {
+    account: params.account,
+    currency: params.currency,
+    number_format: params.number_format,
+    date_format: params.date_format,
+    dry_run: params.dry_run,
+    uncategorized_expense_account: params.uncategorized_expense_account,
+    uncategorized_income_account: params.uncategorized_income_account,
+  };
+}
 
 // ── Result rendering ─────────────────────────────────────────────────
 
@@ -271,14 +297,10 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
     return importStatementRows(
       rows,
       {
-        account: params.account,
-        currency: params.currency,
+        ...sharedFields(params),
         // OFX amounts are always '.'-decimal per spec -- skip locale auto-detect, which
         // could otherwise misread e.g. "1.234" as European thousands-grouping.
         number_format: "us",
-        dry_run: params.dry_run,
-        uncategorized_expense_account: params.uncategorized_expense_account,
-        uncategorized_income_account: params.uncategorized_income_account,
         encoding,
       },
       signal,
@@ -300,13 +322,7 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
   return importStatementRows(
     rows,
     {
-      account: params.account,
-      currency: params.currency,
-      number_format: params.number_format,
-      date_format: params.date_format,
-      dry_run: params.dry_run,
-      uncategorized_expense_account: params.uncategorized_expense_account,
-      uncategorized_income_account: params.uncategorized_income_account,
+      ...sharedFields(params),
       encoding,
       detection: {
         preambleRows: headerRowIndex,
@@ -332,13 +348,7 @@ export async function runRowImport(params: RowImportParams, signal?: AbortSignal
   return importStatementRows(
     rows,
     {
-      account: params.account,
-      currency: params.currency,
-      number_format: params.number_format,
-      date_format: params.date_format,
-      dry_run: params.dry_run,
-      uncategorized_expense_account: params.uncategorized_expense_account,
-      uncategorized_income_account: params.uncategorized_income_account,
+      ...sharedFields(params),
       encoding: "inline",
     },
     signal,

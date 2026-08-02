@@ -2,6 +2,14 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ImportResult } from "../import/import";
 import { renderImportResult, runImport } from "../import/import";
+import {
+  DateFormatParam,
+  NumberFormatParam,
+  RECATEGORIZE_GUIDELINE,
+  UNCATEGORIZED_ACCOUNTS_GUIDELINE,
+  UncategorizedExpenseAccountParam,
+  UncategorizedIncomeAccountParam,
+} from "./import-tool-shared";
 
 const ColumnMap = Type.Optional(
   Type.Object(
@@ -42,47 +50,10 @@ const Params = Type.Object({
         "If omitted and no currency column is detected, transactions will be written without a currency.",
     }),
   ),
-  uncategorized_expense_account: Type.String({
-    description:
-      "REQUIRED. Existing account that outflow (negative) rows balance to, in the workspace's own naming " +
-      "(e.g. expenses:uncategorized) -- take it from the injected account list. The tool does not create " +
-      "accounts and fails if it is not declared. If the statement has no outflows, pass any declared expense account.",
-  }),
-  uncategorized_income_account: Type.String({
-    description:
-      "REQUIRED. Existing account that inflow (positive) rows balance to (e.g. income:uncategorized), from the " +
-      "injected account list. For a credit-card/liability statement, point both at an expense catch-all since " +
-      "charges are spending, not income. If the statement has no inflows, pass any declared income account.",
-  }),
-  number_format: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal("us", { description: "US/UK: 1,234.56 (comma thousands, dot decimal)" }),
-        Type.Literal("de", { description: "German: 1.234,56 (dot thousands, comma decimal)" }),
-        Type.Literal("fr", { description: "French/SI: 1 234,56 (space/NBSP thousands, comma decimal)" }),
-        Type.Literal("ch", { description: "Swiss: 1'234.56 (apostrophe thousands, dot decimal)" }),
-      ],
-      {
-        description:
-          "Number format override. Omit to auto-detect. Always specify if the auto-detected " +
-          "format is wrong -- a mis-parsed amount silently corrupts the ledger.",
-      },
-    ),
-  ),
-  date_format: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal("MDY", { description: "US: MM/DD/YYYY" }),
-        Type.Literal("DMY", { description: "EU/German: DD/MM/YYYY or DD.MM.YYYY" }),
-      ],
-      {
-        description:
-          "Date order override for ambiguous dates (both components <= 12). " +
-          "Omit to auto-detect from the column. " +
-          "IMPORTANT: a mis-parsed date sends the transaction to the wrong monthly file.",
-      },
-    ),
-  ),
+  uncategorized_expense_account: UncategorizedExpenseAccountParam,
+  uncategorized_income_account: UncategorizedIncomeAccountParam,
+  number_format: NumberFormatParam,
+  date_format: DateFormatParam,
   column_map: ColumnMap,
   skip_rows: Type.Optional(
     Type.Number({
@@ -109,8 +80,8 @@ const PROMPT_SNIPPET =
 const PROMPT_GUIDELINES = [
   "import_transactions reads a CSV or OFX/QFX file by path. For PDF or image statements, use extract_text then import_transactions_from_rows instead.",
   "Run with dry_run:true before the real import to confirm parsed counts, detected formats, and a sample.",
-  "uncategorized_expense_account and uncategorized_income_account are required: pass accounts that already exist in the injected list (the tool does not create accounts). Pick them before calling, even for dry_run.",
-  "After import, re-categorize the uncategorized accounts with the modify-transactions skill's bundled script (run via bash) - or the edit tool on the monthly journal files if that skill isn't installed in this build.",
+  UNCATEGORIZED_ACCOUNTS_GUIDELINE,
+  RECATEGORIZE_GUIDELINE,
   "If the number_format or date_format look wrong in the dry_run output, pass an explicit override. These are ignored for OFX (unambiguous by spec).",
   "If a required column is not found, supply column_map with the exact header names from the CSV.",
   "Leading metadata/preamble rows before the header are skipped automatically; only set skip_rows if the wrong header line is picked.",
