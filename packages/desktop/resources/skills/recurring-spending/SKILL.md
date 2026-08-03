@@ -20,18 +20,32 @@ so other skills (subscription-audit, weekly-recap) can reuse it without
 re-deriving anything.
 
 - **Before detecting anything**, check whether `recurring-expenses.md`
-  exists and read its `Last refreshed:` date (first lines of the file).
-  - **Fresh** (refreshed within the last 14 days): skip the full detection.
-    Answer from the cached tables directly. To catch anything the cache might
-    have missed, run one narrow `query` (`report: "reg"`,
-    `account_pattern: "Expenses"`, `begin_date: <last refreshed date>`,
-    `output_format: "csv"`) and fold in any new charges, price changes, or
-    payees that stopped appearing before you answer.
-  - **Stale or missing** (older than 14 days, absent, or the user explicitly
-    asks to refresh): run the full detection below, then rewrite the file.
+  exists and read its `Last refreshed:` and `Ledger fingerprint:` lines
+  (first lines of the file). Then run `query report:"stats"`,
+  `account_pattern: "Expenses"` (plain text — `stats` has no CSV mode, so
+  don't set `output_format`; scoping to Expenses avoids false invalidation
+  from unrelated income or transfer activity) and compare its `Txns`,
+  `Payees/descriptions`, and `Accounts` counts against the cached
+  fingerprint.
+  - **Fresh** (fingerprint matches and refreshed within the last 14 days):
+    skip the full detection. Answer from the cached tables directly. To
+    catch anything the cache might have missed, run one narrow `query`
+    (`report: "reg"`, `account_pattern: "Expenses"`,
+    `begin_date: <last refreshed date>`, `output_format: "csv"`) and fold in
+    any new charges, price changes, or payees that stopped appearing before
+    you answer.
+  - **Stale or missing** (fingerprint mismatch, older than 14 days, absent,
+    or the user explicitly asks to refresh): run the full detection below,
+    then rewrite the file. A fingerprint mismatch means the ledger changed
+    underneath the cache — a backfill, a payee rename, an account cleanup —
+    so skip the narrow top-up query too; the whole detection needs a redo.
 - **After a full detection**, write `recurring-expenses.md` at the workspace
   root with:
   - a `Last refreshed: <today>` line,
+  - a `Ledger fingerprint: <Txns> txns, <Payees/descriptions> payees,
+    <Accounts> accounts` line, from the same Expenses-scoped `stats` call —
+    this is what the next read compares against to catch ledger edits that
+    predate the 14-day freshness window,
   - the two report tables from the "Reporting" section below (same columns,
     same grouping),
   - the combined totals per month and per year,
