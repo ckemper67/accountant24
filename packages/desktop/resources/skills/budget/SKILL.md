@@ -63,6 +63,13 @@ validate, or commit the journal while building or revising a budget.
 
 For each account/currency line from the script's output:
 
+- **Cross-check with recurring-spending's cache**, if `recurring-expenses.md`
+  exists at the workspace root: any cached payee whose Account matches or
+  falls under this line and has Cadence `yearly` or `quarterly` confirms an
+  annual/seasonal pattern — use that instead of guessing from the raw
+  monthly series for this line. Treat the cache as a hint, not a
+  requirement: don't refresh it yourself, and if it's missing or doesn't
+  cover this account, fall back to reading the monthly series by eye below.
 - **Monthly budget** = the script's average, after excluding one-off
   outlier months (a single large one-time purchase, a rare repair) from your
   own read of the per-month values — recompute the average by hand over the
@@ -70,8 +77,9 @@ For each account/currency line from the script's output:
   don't silently drop data.
 - **Yearly budget** = monthly x 12, **except** for accounts with a clear
   annual or seasonal pattern (insurance, an annual renewal, holiday
-  spending) — for those, compute the yearly figure from the script's `total`
-  instead of monthly x 12, and mark the row's basis as `annual`.
+  spending, or confirmed by the cache cross-check above) — for those,
+  compute the yearly figure from the script's `total` instead of monthly x
+  12, and mark the row's basis as `annual`.
 - Round to sensible amounts (nearest 5 or 10 in the ledger's currency) — a
   budget is a target, not a restated average.
 - If multiple currencies appear for the same account (the script emits one
