@@ -9,19 +9,14 @@ conventions - never lower it to make a change pass.
 
 Usage: python3 coverage_check.py
 """
+import ast
 import dis
 import sys
 import trace
 import unittest
 from pathlib import Path
 
-THRESHOLD = 99.0  # percent - ratchet up only, never down (see module docstring)
-
-# The one line this can never see covered: `if __name__ == "__main__":
-# main()`. It only executes when the script runs as a subprocess (which
-# TestScriptEntryPoint in test_fetch_prices.py does exercise), and this
-# in-process line tracer has no visibility into a child process. 99% (not
-# 100%) accounts for exactly that one line, not a gap in the test suite.
+THRESHOLD = 100.0  # percent - ratchet up only, never down (see module docstring)
 
 HERE = Path(__file__).resolve().parent
 TARGET = HERE / "fetch_prices.py"
@@ -47,6 +42,29 @@ def executable_lines(path: Path) -> set[int]:
     return lines
 
 
+def main_guard_body_lines(path: Path) -> set[int]:
+    """Line numbers inside the body of `if __name__ == "__main__":` - real
+    code that only executes when this script runs as a subprocess (which
+    TestScriptEntryPoint in test_fetch_prices.py does exercise), so this
+    in-process line tracer can never see it hit. Detected via ast rather
+    than a hardcoded line count, so the exemption tracks edits to that
+    block automatically instead of silently under- or over-counting."""
+    tree = ast.parse(path.read_text(), filename=str(path))
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "__name__"
+        ):
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if hasattr(sub, "lineno"):
+                        lines.add(sub.lineno)
+    return lines
+
+
 def main() -> None:
     # Discovery has to happen *inside* runfunc too, not before it - it's what
     # first imports fetch_prices.py, and everything module-level (imports,
@@ -67,7 +85,7 @@ def main() -> None:
     target = str(TARGET)
     covered = {ln for (fn, ln), n in counts.items() if Path(fn).resolve() == TARGET and n > 0 or fn == target and n > 0}
 
-    total = executable_lines(TARGET)
+    total = executable_lines(TARGET) - main_guard_body_lines(TARGET)
     hit = total & covered
     missed = sorted(total - covered)
     pct = 100.0 * len(hit) / len(total) if total else 100.0
