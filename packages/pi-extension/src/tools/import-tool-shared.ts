@@ -1,5 +1,5 @@
 // Parameter schemas and prompt guidelines shared by import_transactions and
-// import_transactions_from_rows -- both feed the same underlying pipeline (see
+// import_extracted_transactions -- both feed the same underlying pipeline (see
 // ../import/import.ts) and expose the same locale-override and catch-all-account contract.
 
 import { Type } from "typebox";

@@ -30,7 +30,7 @@ const Params = Type.Object({
   file_path: Type.String({
     description:
       "Workspace-relative path to the CSV or OFX/QFX bank export, e.g. files/2025/01/statement.csv. " +
-      "For PDF/image statements, use extract_text first to get the text, then import_transactions_from_rows.",
+      "For PDF/image statements, use extract_text first to get the text, then import_extracted_transactions.",
   }),
   account: Type.String({
     description: "Ledger account the statement belongs to, e.g. Assets:Bank:BayFed:Checking",
@@ -78,7 +78,7 @@ const PROMPT_SNIPPET =
   "Bulk-import a CSV bank export (auto-detects encoding, number format, date order; deduplicates on re-import)";
 
 const PROMPT_GUIDELINES = [
-  "import_transactions reads a CSV or OFX/QFX file by path. For PDF or image statements, use extract_text then import_transactions_from_rows instead.",
+  "import_transactions reads a CSV or OFX/QFX file by path. For PDF or image statements, use extract_text then import_extracted_transactions instead.",
   "Run with dry_run:true before the real import to confirm parsed counts, detected formats, and a sample.",
   UNCATEGORIZED_ACCOUNTS_GUIDELINE,
   RECATEGORIZE_GUIDELINE,

@@ -59,7 +59,7 @@ const Params = Type.Object({
   ),
 });
 
-const LABEL = "Import Transactions From Rows";
+const LABEL = "Import Extracted Transactions";
 
 const PROMPT_SNIPPET =
   "Import transactions transcribed from a PDF/image statement (same locale parsing, dedup, and validation as CSV import)";
@@ -74,8 +74,8 @@ const PROMPT_GUIDELINES = [
   RECATEGORIZE_GUIDELINE,
 ];
 
-export const importTransactionsFromRowsTool: ToolDefinition<typeof Params, ImportResult> = {
-  name: "import_transactions_from_rows",
+export const importExtractedTransactionsTool: ToolDefinition<typeof Params, ImportResult> = {
+  name: "import_extracted_transactions",
   label: LABEL,
   description:
     "Import transactions supplied inline as rows (e.g. read from a PDF or image statement via extract_text). " +

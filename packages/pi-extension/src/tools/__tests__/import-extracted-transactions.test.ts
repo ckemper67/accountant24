@@ -8,7 +8,7 @@ vi.mock("../../import/import", async (importOriginal) => {
 });
 
 const { runRowImport } = await import("../../import/import");
-const { importTransactionsFromRowsTool } = await import("../import-transactions-from-rows.js");
+const { importExtractedTransactionsTool } = await import("../import-extracted-transactions.js");
 
 const mockRun = vi.mocked(runRowImport);
 
@@ -25,17 +25,17 @@ const RESULT: ImportResult = {
 };
 
 const run = (params: any) =>
-  importTransactionsFromRowsTool.execute("test", params, undefined, undefined, undefined as any) as Promise<any>;
+  importExtractedTransactionsTool.execute("test", params, undefined, undefined, undefined as any) as Promise<any>;
 
 const text = (result: any): string => result.content.map((c: any) => (c.type === "text" ? c.text : "")).join("\n");
 
 beforeEach(() => mockRun.mockReset());
 
-describe("importTransactionsFromRowsTool", () => {
+describe("importExtractedTransactionsTool", () => {
   test("should run sequentially so ledger writes never interleave", () => {
     // Serialization relies on this instead of an in-code lock: pi runs any batch
     // containing a "sequential" tool one call at a time.
-    expect(importTransactionsFromRowsTool.executionMode).toBe("sequential");
+    expect(importExtractedTransactionsTool.executionMode).toBe("sequential");
   });
 
   test("should forward account, rows, and options to runRowImport unchanged", async () => {

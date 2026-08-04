@@ -33,7 +33,7 @@
 //   which number -- same-fingerprint entries are interchangeable for matching purposes, so
 //   the user reordering their journal by hand can't break this.
 
-import { ACCOUNTANT24_HOME, LEDGER_DIR } from "../config";
+import { ACCOUNTANT24_WORKSPACE, LEDGER_DIR } from "../config";
 import { runHledger } from "../ledger/hledger";
 import { resolveSafePath } from "../ledger/paths";
 
@@ -120,7 +120,7 @@ export async function loadExistingImportIds(account: string, signal?: AbortSigna
   let stdout: string;
   try {
     stdout = await runHledger(["print", "-f", mainPath, "-O", "json"], {
-      cwd: ACCOUNTANT24_HOME,
+      cwd: ACCOUNTANT24_WORKSPACE,
       signal,
     });
   } catch {

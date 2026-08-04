@@ -12,7 +12,7 @@ const LEDGER = join(BASE, "ledger");
 const FILES = join(BASE, "files");
 
 vi.mock("../../config.js", () => ({
-  ACCOUNTANT24_HOME: BASE,
+  ACCOUNTANT24_WORKSPACE: BASE,
   LEDGER_DIR: LEDGER,
   MEMORY_PATH: join(BASE, "memory.md"),
   FILES_DIR: join(BASE, "files"),

@@ -9,7 +9,7 @@ three transaction-entry tools, two of which are nearly identical.
 | --- | --- | --- |
 | `add_transactions` | explicit postings | Manual entry; the caller supplies the full double-entry. |
 | `import_transactions` | `file_path` (CSV) | Bank CSV: auto-detect encoding/number/date, dedup, auto-balance to a catch-all. |
-| `import_transactions_from_rows` | `rows` (inline) | Same as above, but rows transcribed from a PDF/image statement. |
+| `import_extracted_transactions` | `rows` (inline) | Same as above, but rows transcribed from a PDF/image statement. |
 
 The two import tools share the **same backend** (`importStatementRows`) and about 90% of
 their parameters. They differ only in **where the rows come from**: parse a CSV file, or
@@ -17,7 +17,7 @@ take rows verbatim.
 
 ## Proposal
 
-Merge `import_transactions` and `import_transactions_from_rows` into a single
+Merge `import_transactions` and `import_extracted_transactions` into a single
 `import_transactions` tool that accepts **exactly one of** `file_path` or `rows`.
 Net effect: 3 tools -> 2. `add_transactions` stays as-is.
 
@@ -52,7 +52,7 @@ Net effect: 3 tools -> 2. `add_transactions` stays as-is.
 
 ## Impact
 
-- **Removed:** `import_transactions_from_rows` (tool definition, schema, prompt guidelines).
+- **Removed:** `import_extracted_transactions` (tool definition, schema, prompt guidelines).
 - **Backend:** unchanged. `import.ts` `runImport` / `runRowImport` stay; only the tool
   layer merges.
 - **Prompt guidance:** one merged guideline set ("CSV -> `file_path`; PDF/image ->

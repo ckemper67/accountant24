@@ -1,6 +1,11 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { runHledger } from "../../ledger/hledger";
 import type { DedupRow } from "../dedup";
-import { computeImportId, reconcile } from "../dedup";
+import { computeImportId, loadExistingImportIds, reconcile } from "../dedup";
+
+vi.mock("../../ledger/hledger", () => ({ runHledger: vi.fn() }));
+
+const mockedRunHledger = vi.mocked(runHledger);
 
 describe("computeImportId()", () => {
   const row: DedupRow = { date: "2025-01-15", amount: -45.0 };
@@ -173,5 +178,135 @@ describe("reconcile()", () => {
     const existingId = computeImportId(account, makeRow("2025-01-15", -5), 0);
     const result = reconcile([row], account, new Set([existingId]));
     expect(result[0].isNew).toBe(false);
+  });
+});
+
+describe("loadExistingImportIds()", () => {
+  const account = "Assets:Checking";
+
+  const txn = (overrides: Record<string, unknown> = {}) => ({
+    tdate: "2025-01-15",
+    ttags: [],
+    tpostings: [{ paccount: account, pamount: [{ aquantity: { decimalMantissa: -500, decimalPlaces: 2 } }] }],
+    ...overrides,
+  });
+
+  test("should return an empty set when hledger fails (no ledger yet)", async () => {
+    mockedRunHledger.mockRejectedValue(new Error("no such file"));
+    const ids = await loadExistingImportIds(account);
+    expect(ids.size).toBe(0);
+  });
+
+  test("should return an empty set when hledger's output is not valid JSON", async () => {
+    mockedRunHledger.mockResolvedValue("not json");
+    const ids = await loadExistingImportIds(account);
+    expect(ids.size).toBe(0);
+  });
+
+  test("should return an empty set when hledger's output is not a JSON array", async () => {
+    mockedRunHledger.mockResolvedValue(JSON.stringify({ not: "an array" }));
+    const ids = await loadExistingImportIds(account);
+    expect(ids.size).toBe(0);
+  });
+
+  test("should extract a tagged import_id directly, without recomputing it", async () => {
+    mockedRunHledger.mockResolvedValue(JSON.stringify([txn({ ttags: [["import_id", "abc123"]] })]));
+    const ids = await loadExistingImportIds(account);
+    expect(ids).toEqual(new Set(["abc123"]));
+  });
+
+  test("should skip an untagged transaction with no date", async () => {
+    mockedRunHledger.mockResolvedValue(JSON.stringify([txn({ tdate: 123 })]));
+    const ids = await loadExistingImportIds(account);
+    expect(ids.size).toBe(0);
+  });
+
+  test("should skip postings on a different account", async () => {
+    mockedRunHledger.mockResolvedValue(
+      JSON.stringify([
+        txn({
+          tpostings: [
+            { paccount: "Expenses:Other", pamount: [{ aquantity: { decimalMantissa: -500, decimalPlaces: 2 } }] },
+          ],
+        }),
+      ]),
+    );
+    const ids = await loadExistingImportIds(account);
+    expect(ids.size).toBe(0);
+  });
+
+  test("should skip amounts with a non-numeric mantissa or places", async () => {
+    mockedRunHledger.mockResolvedValue(
+      JSON.stringify([
+        txn({
+          tpostings: [{ paccount: account, pamount: [{ aquantity: { decimalMantissa: "-5", decimalPlaces: 2 } }] }],
+        }),
+      ]),
+    );
+    const ids = await loadExistingImportIds(account);
+    expect(ids.size).toBe(0);
+  });
+
+  test("should recompute the fallback import_id for an untagged transaction, matching computeImportId", async () => {
+    mockedRunHledger.mockResolvedValue(JSON.stringify([txn()]));
+    const ids = await loadExistingImportIds(account);
+    const expected = computeImportId(account, { date: "2025-01-15", amount: -5 }, 0);
+    expect(ids).toEqual(new Set([expected]));
+  });
+
+  test("should assign successive ordinals to genuine same-day duplicates", async () => {
+    mockedRunHledger.mockResolvedValue(JSON.stringify([txn(), txn()]));
+    const ids = await loadExistingImportIds(account);
+    const row = { date: "2025-01-15", amount: -5 };
+    expect(ids).toEqual(new Set([computeImportId(account, row, 0), computeImportId(account, row, 1)]));
+  });
+});
+
+describe("loadExistingImportIds() edge cases", () => {
+  const account = "Assets:Checking";
+
+  test("should ignore malformed tag entries (non-array) when looking for import_id", async () => {
+    mockedRunHledger.mockResolvedValue(
+      JSON.stringify([
+        {
+          tdate: "2025-01-15",
+          ttags: ["not-a-pair", ["import_id", "abc123"]],
+          tpostings: [],
+        },
+      ]),
+    );
+    const ids = await loadExistingImportIds(account);
+    expect(ids).toEqual(new Set(["abc123"]));
+  });
+
+  test("should treat a transaction with no tpostings array as having no matching postings", async () => {
+    mockedRunHledger.mockResolvedValue(JSON.stringify([{ tdate: "2025-01-15", ttags: [] }]));
+    const ids = await loadExistingImportIds(account);
+    expect(ids.size).toBe(0);
+  });
+
+  test("should treat a posting with no pamount array as having no amounts", async () => {
+    mockedRunHledger.mockResolvedValue(
+      JSON.stringify([{ tdate: "2025-01-15", ttags: [], tpostings: [{ paccount: account }] }]),
+    );
+    const ids = await loadExistingImportIds(account);
+    expect(ids.size).toBe(0);
+  });
+
+  test("should format an amount that rounds to exactly zero cents without a negative sign", async () => {
+    // mantissa -1 at 3 decimal places is -0.001, which rounds half-up to "0.00" -- the
+    // negative flag must not produce a "-0.00" fingerprint.
+    mockedRunHledger.mockResolvedValue(
+      JSON.stringify([
+        {
+          tdate: "2025-01-15",
+          ttags: [],
+          tpostings: [{ paccount: account, pamount: [{ aquantity: { decimalMantissa: -1, decimalPlaces: 3 } }] }],
+        },
+      ]),
+    );
+    const ids = await loadExistingImportIds(account);
+    const expected = computeImportId(account, { date: "2025-01-15", amount: 0 }, 0);
+    expect(ids).toEqual(new Set([expected]));
   });
 });
