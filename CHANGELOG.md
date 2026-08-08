@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.14
+
+[compare changes](https://github.com/machulav/accountant24/compare/v0.2.13...v0.2.14)
+
+### 🚀 Features
+
+- Optional assertion columns on the Net Worth page ([#43](https://github.com/machulav/accountant24/pull/43))
+- Cleaner file attachment cards in the chat and composer ([#44](https://github.com/machulav/accountant24/pull/44))
+- Cleaner code blocks in the chat ([#45](https://github.com/machulav/accountant24/pull/45))
+- Clearer net worth summaries for multiple currencies ([#46](https://github.com/machulav/accountant24/pull/46))
+- Transactions page with search and filters ([#47](https://github.com/machulav/accountant24/pull/47))
+
+### 🐞 Bug Fixes
+
+- Rename the "Commit & Push" tool to "Commit" ([#42](https://github.com/machulav/accountant24/pull/42))
+
 ## v0.2.13
 
 [compare changes](https://github.com/machulav/accountant24/compare/v0.2.12...v0.2.13)
