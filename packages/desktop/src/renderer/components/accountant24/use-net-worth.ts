@@ -2,8 +2,8 @@
 
 // The net worth report feed, shared by the page and the sidebar badge.
 
-import { useAuiState } from "@assistant-ui/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useAgentIdleRefresh } from "@/hooks/use-agent-idle-refresh";
 import { ledgerApi } from "@/rpc/api";
 import type { NetWorth } from "@/rpc/types";
 
@@ -29,17 +29,10 @@ export function useNetWorth(): NetWorth | null {
   }, []);
 
   useEffect(() => refresh(), [refresh]);
-
-  // Refetch on the running → idle edge (the finished turn may have posted
-  // transactions). Existing rows stay up while the refresh is in flight, so
-  // the list never flickers back to the skeleton. Same pattern as mentions.tsx.
-  const isRunning = useAuiState((s) => s.thread.isRunning);
-  const wasRunning = useRef(isRunning);
-  useEffect(() => {
-    const justFinished = wasRunning.current && !isRunning;
-    wasRunning.current = isRunning;
-    if (justFinished) return refresh();
-  }, [isRunning, refresh]);
+  // Refetch when a turn finishes (it may have posted transactions). Existing
+  // rows stay up while the refresh is in flight, so the list never flickers
+  // back to the skeleton.
+  useAgentIdleRefresh(refresh);
 
   return data;
 }
