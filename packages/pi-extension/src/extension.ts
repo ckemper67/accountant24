@@ -7,6 +7,7 @@ import {
   addBalanceAssertionsTool,
   addPricesTool,
   addTransactionsTool,
+  bulkEditTransactionsTool,
   commitAndPushTool,
   extractTextTool,
   queryTool,
@@ -23,6 +24,7 @@ export function createAccountantExtension(pi: ExtensionAPI): void {
   pi.registerTool(addBalanceAssertionsTool);
   pi.registerTool(addPricesTool);
   pi.registerTool(addTransactionsTool);
+  pi.registerTool(bulkEditTransactionsTool);
   pi.registerTool(commitAndPushTool);
   pi.registerTool(extractTextTool);
   pi.registerTool(validateTool);

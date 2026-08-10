@@ -7,6 +7,7 @@ export const TOOL_LABELS: Record<string, string> = {
   // the agent package. When a tool is added or renamed there, update this too.
   query: "Query Ledger",
   add_transactions: "Add Transactions",
+  bulk_edit_transactions: "Bulk Edit Transactions",
   add_balance_assertions: "Add Balance Assertions",
   add_prices: "Add Prices",
   extract_text: "Extract Text",
