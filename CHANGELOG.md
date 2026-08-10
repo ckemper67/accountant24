@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.15
+
+[compare changes](https://github.com/machulav/accountant24/compare/v0.2.14...v0.2.15)
+
+### 🚀 Features
+
+- Clearer empty states on the Transactions and Net Worth pages ([#49](https://github.com/machulav/accountant24/pull/49))
+- Consistent data tables on the Net Worth and Transactions pages ([#50](https://github.com/machulav/accountant24/pull/50))
+- Add bulk_edit_transactions tool ([#23](https://github.com/machulav/accountant24/pull/23))
+- Upgrade the AI agent from pi 0.79.8 to 0.84.1 ([#51](https://github.com/machulav/accountant24/pull/51))
+- Steer the agent by sending messages while it works ([#53](https://github.com/machulav/accountant24/pull/53))
+
+### ♻️ Refactors
+
+- Say "price" instead of "rate", matching hledger ([#52](https://github.com/machulav/accountant24/pull/52))
+
 ## v0.2.14
 
 [compare changes](https://github.com/machulav/accountant24/compare/v0.2.13...v0.2.14)
