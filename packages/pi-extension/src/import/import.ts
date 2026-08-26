@@ -26,26 +26,27 @@ import { decodeBuffer } from "./encoding";
 import type { NumberFormat } from "./numbers";
 import { detectNumberFormat, parseLocaleAmount } from "./numbers";
 import { looksLikeOfx, parseOfx } from "./ofx";
+import { looksLikeQif, parseQif } from "./qif";
 
 // ── Types ────────────────────────────────────────────────────────────
 
 /** File format for runImport. "auto" (the default) detects from the file extension. */
-export type ImportFileFormat = "csv" | "ofx";
+export type ImportFileFormat = "csv" | "ofx" | "qif";
 
 export interface ImportParams {
-  /** Workspace-relative path to the statement file (CSV or OFX/QFX/QBO). */
+  /** Workspace-relative path to the statement file (CSV, OFX/QFX/QBO, or QIF). */
   file_path: string;
   /** Ledger account this statement belongs to, e.g. "Assets:Bank:Checking". */
   account: string;
   /**
    * File format; omit to detect from the file extension (.csv/.tsv -> csv, .ofx/.qfx/.qbo ->
    * ofx -- QFX and QBO are the same OFX SGML format under different filename conventions
-   * used by Quicken and QuickBooks Web Connect respectively). If detection fails, or the
-   * content doesn't match the chosen/detected format, the tool errors with a preview of the
-   * file so you can inspect it and retry explicitly.
+   * used by Quicken and QuickBooks Web Connect respectively -- .qif -> qif). If detection
+   * fails, or the content doesn't match the chosen/detected format, the tool errors with a
+   * preview of the file so you can inspect it and retry explicitly.
    */
   format?: ImportFileFormat;
-  /** Statement currency (used when the CSV has no currency column). */
+  /** Statement currency (used when the CSV/QIF has no currency column/field). */
   currency?: string;
   /** Explicit number format override; omit to auto-detect. Ignored for OFX (always "us"). */
   number_format?: NumberFormat;
@@ -310,6 +311,7 @@ function detectFormatFromExtension(filePath: string): ImportFileFormat | undefin
   // .qfx (Quicken) and .qbo (QuickBooks Web Connect) are the same OFX SGML format under a
   // different filename convention -- both route to the same parser as .ofx.
   if (ext === "ofx" || ext === "qfx" || ext === "qbo") return "ofx";
+  if (ext === "qif") return "qif";
   if (ext === "csv" || ext === "tsv") return "csv";
   return undefined;
 }
@@ -319,7 +321,7 @@ function formatError(filePath: string, reason: string, text: string): Error {
   const preview = text.split(/\r?\n/).slice(0, 5).join("\n");
   return new Error(
     `${reason} for "${filePath}".\nFirst 5 lines:\n${preview}\n\n` +
-      `Read the file to check its actual format, then retry with format: "csv" or format: "ofx".`,
+      `Read the file to check its actual format, then retry with format: "csv", "ofx", or "qif".`,
   );
 }
 
@@ -379,6 +381,22 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
       },
       signal,
       rows.map((r) => r.fitid),
+    );
+  }
+
+  if (format === "qif") {
+    if (!looksLikeQif(text)) {
+      throw formatError(params.file_path, "File does not look like QIF (no !Type: header found)", text);
+    }
+    const rows = parseQif(text);
+
+    return importStatementRows(
+      rows,
+      {
+        ...sharedFields(params),
+        encoding,
+      },
+      signal,
     );
   }
 
