@@ -29,25 +29,26 @@ const ColumnMap = Type.Optional(
 const Params = Type.Object({
   file_path: Type.String({
     description:
-      "Workspace-relative path to the CSV or OFX/QFX/QBO bank export, e.g. files/2025/01/statement.csv. " +
+      "Workspace-relative path to the CSV, OFX/QFX/QBO, or QIF bank export, e.g. files/2025/01/statement.csv. " +
       "For PDF/image statements, use extract_text first to get the text, then import_extracted_transactions.",
   }),
   account: Type.String({
     description: "Ledger account the statement belongs to, e.g. Assets:Bank:BayFed:Checking",
   }),
   format: Type.Optional(
-    Type.Union([Type.Literal("csv"), Type.Literal("ofx")], {
+    Type.Union([Type.Literal("csv"), Type.Literal("ofx"), Type.Literal("qif")], {
       description:
-        "File format. Omit to detect from the extension (.csv/.tsv -> csv, .ofx/.qfx/.qbo -> ofx). If detection " +
-        "fails or the content doesn't match, the tool errors with a preview of the file's first lines -- read " +
-        "the file yourself to confirm the real format, then retry with this set explicitly.",
+        "File format. Omit to detect from the extension (.csv/.tsv -> csv, .ofx/.qfx/.qbo -> ofx, .qif -> qif). " +
+        "If detection fails or the content doesn't match, the tool errors with a preview of the file's first " +
+        "lines -- read the file yourself to confirm the real format, then retry with this set explicitly.",
     }),
   ),
   currency: Type.Optional(
     Type.String({
       description:
-        "Statement currency code (e.g. USD, EUR). Used when the CSV has no currency column. " +
-        "If omitted and no currency column is detected, transactions will be written without a currency.",
+        "Statement currency code (e.g. USD, EUR). Used when the CSV/QIF has no currency column/field -- QIF " +
+        "never has one, so pass this for QIF imports. If omitted and no currency is available, transactions " +
+        "will be written without a currency.",
     }),
   ),
   uncategorized_expense_account: UncategorizedExpenseAccountParam,
@@ -78,11 +79,11 @@ const PROMPT_SNIPPET =
   "Bulk-import a CSV bank export (auto-detects encoding, number format, date order; deduplicates on re-import)";
 
 const PROMPT_GUIDELINES = [
-  "import_transactions reads a CSV or OFX/QFX/QBO file by path. For PDF or image statements, use extract_text then import_extracted_transactions instead.",
+  "import_transactions reads a CSV, OFX/QFX/QBO, or QIF file by path. For PDF or image statements, use extract_text then import_extracted_transactions instead.",
   "Run with dry_run:true before the real import to confirm parsed counts, detected formats, and a sample.",
   UNCATEGORIZED_ACCOUNTS_GUIDELINE,
   RECATEGORIZE_GUIDELINE,
-  "If the number_format or date_format look wrong in the dry_run output, pass an explicit override. These are ignored for OFX (unambiguous by spec).",
+  "If the number_format or date_format look wrong in the dry_run output, pass an explicit override. These are ignored for OFX (unambiguous by spec); QIF has neither a currency nor a bank-assigned transaction id, so pass currency explicitly and rely on the shared date/amount dedup.",
   "If a required column is not found, supply column_map with the exact header names from the CSV.",
   "Leading metadata/preamble rows before the header are skipped automatically; only set skip_rows if the wrong header line is picked.",
   "If the tool errors that it cannot determine the format, or that the content doesn't match, read the file yourself to identify its real format, then retry with format set explicitly.",
@@ -93,7 +94,7 @@ export const importTransactionsTool: ToolDefinition<typeof Params, ImportResult>
   name: "import_transactions",
   label: LABEL,
   description:
-    "Bulk-import a CSV or OFX/QFX bank export into the ledger. Auto-detects encoding (UTF-8, windows-1252), " +
+    "Bulk-import a CSV, OFX/QFX/QBO, or QIF bank export into the ledger. Auto-detects encoding (UTF-8, windows-1252), " +
     "number format (US/DE/FR/CH), and date order. Deduplicates on re-import, including against untagged " +
     "transactions written before this tool existed. Routes each transaction through the standard validated " +
     "pipeline (monthly files, hledger check --strict).",

@@ -736,6 +736,15 @@ describe("runImport() OFX", () => {
     expect(content).not.toContain("; import_id: ofx:");
   });
 
+  test("should write original_payee_name and original_description tags from NAME/MEMO", async () => {
+    writeFileSync(join(FILES, "statement.ofx"), SIMPLE_OFX);
+    await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    expect(content).toContain("; original_payee_name: Whole Foods");
+    expect(content).toContain("; original_description: Groceries");
+  });
+
   test("should accept an explicit format override regardless of extension", async () => {
     writeFileSync(join(FILES, "statement.dat"), SIMPLE_OFX);
     const result = await runImport({
@@ -864,6 +873,102 @@ describe("runImport() OFX", () => {
 
     expect(result.parsed).toBe(0);
     expect(result.statementBalance?.amount).toBe("1954.50");
+  });
+});
+
+// ── QIF import tests ─────────────────────────────────────────────────
+
+const SIMPLE_QIF = `!Type:Bank
+D01/15/2025
+T-45.00
+PWhole Foods
+MGroceries
+^
+D01/16/2025
+T2000.00
+PACME Corp
+MJanuary salary
+^
+`;
+
+describe("runImport() QIF", () => {
+  test("should detect QIF from the .qif extension and import its transactions", async () => {
+    writeFileSync(join(FILES, "statement.qif"), SIMPLE_QIF);
+    const result = await runImport({
+      file_path: "files/statement.qif",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(2);
+    expect(result.imported).toBe(2);
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    expect(content).toContain("Whole Foods");
+    expect(content).toContain("ACME Corp");
+  });
+
+  test("should write original_payee_name and original_description tags from P/M", async () => {
+    writeFileSync(join(FILES, "statement.qif"), SIMPLE_QIF);
+    await runImport({ file_path: "files/statement.qif", account: ACCOUNT, currency: "USD", ...BUCKETS });
+
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    expect(content).toContain("; original_payee_name: Whole Foods");
+    expect(content).toContain("; original_description: Groceries");
+    // QIF has no bank-assigned id -- no fitid tag should appear.
+    expect(content).not.toContain("; fitid:");
+  });
+
+  test("should require an explicit currency (QIF has no currency field)", async () => {
+    writeFileSync(join(FILES, "statement.qif"), SIMPLE_QIF);
+    await expect(runImport({ file_path: "files/statement.qif", account: ACCOUNT, ...BUCKETS })).rejects.toThrow(
+      /has no currency/,
+    );
+  });
+
+  test("should accept an explicit format override regardless of extension", async () => {
+    writeFileSync(join(FILES, "statement.dat"), SIMPLE_QIF);
+    const result = await runImport({
+      file_path: "files/statement.dat",
+      account: ACCOUNT,
+      format: "qif",
+      currency: "USD",
+      ...BUCKETS,
+    });
+    expect(result.imported).toBe(2);
+  });
+
+  test("should error with a content preview when format:'qif' is passed but the content isn't QIF", async () => {
+    writeFileSync(join(FILES, "statement.csv"), SIMPLE_CSV);
+    await expect(
+      runImport({ file_path: "files/statement.csv", account: ACCOUNT, format: "qif", currency: "USD", ...BUCKETS }),
+    ).rejects.toThrow(/does not look like QIF[\s\S]*First 5 lines:/);
+  });
+
+  test("should skip all rows on re-import of the same QIF file", async () => {
+    writeFileSync(join(FILES, "statement.qif"), SIMPLE_QIF);
+    const first = await runImport({ file_path: "files/statement.qif", account: ACCOUNT, currency: "USD", ...BUCKETS });
+    expect(first.imported).toBe(2);
+
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    const importIds = [...content.matchAll(/; import_id: (\S+)/g)].map((m) => m[1]);
+    expect(importIds).toHaveLength(2);
+
+    const mockTxns = importIds.map((id, i) => ({
+      ttags: [["import_id", id]],
+      tdate: "2025-01-15",
+      tdescription: `tx${i}`,
+      tpostings: [{ paccount: ACCOUNT, pamount: [] }],
+    }));
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const second = await runImport({ file_path: "files/statement.qif", account: ACCOUNT, currency: "USD", ...BUCKETS });
+    expect(second.imported).toBe(0);
+    expect(second.skipped).toBe(2);
   });
 });
 
