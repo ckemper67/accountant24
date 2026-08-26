@@ -15,11 +15,11 @@
       },
       {
         "group": "Features",
-        "pages": ["docs/skills"]
+        "pages": ["docs/skills", "docs/plugins", "docs/marketplace"]
       },
       {
         "group": "Guides",
-        "pages": ["docs/go-fully-local"]
+        "pages": ["docs/create-a-plugin", "docs/go-fully-local"]
       },
       {
         "group": "Resources",

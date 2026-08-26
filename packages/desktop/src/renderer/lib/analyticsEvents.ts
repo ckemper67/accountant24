@@ -49,6 +49,23 @@ export function trackAttachmentAdded(kind: "image" | "pdf" | "csv" | "other"): v
 /** Record a skill being pulled into a chat. `skill` is a built-in's name or
  *  the literal "custom" — custom skill names never leave the machine. Manual =
  *  the user's `/` invocation; auto = the model reading the skill file itself. */
-export function trackSkillUsed(skill: string, kind: "native" | "custom", method: "manual" | "auto"): void {
+export function trackSkillUsed(skill: string, kind: "official" | "custom", method: "manual" | "auto"): void {
   analyticsApi.track("skill_used", { skill, kind, method });
+}
+
+/** Record the marketplace list reaching Settings → Plugins, once per visit.
+ *  `plugin_count` is everything published, before the installed ones are
+ *  filtered out, so it also says whether the index arrived populated. This is
+ *  the denominator the install events are read against. */
+export function trackMarketplaceViewed(pluginCount: number): void {
+  analyticsApi.track("marketplace_viewed", { plugin_count: pluginCount });
+}
+
+/** Record the install confirmation opening, before anything is downloaded —
+ *  the opening of the `plugin_install_*` lifecycle that main closes with
+ *  `plugin_install_succeeded` or `plugin_install_failed`. Against those two it
+ *  is how often the dialog is approved rather than abandoned: for a community
+ *  plugin, whether people go ahead past the "not reviewed" warning. */
+export function trackPluginInstallStarted(official: boolean): void {
+  analyticsApi.track("plugin_install_started", { official });
 }

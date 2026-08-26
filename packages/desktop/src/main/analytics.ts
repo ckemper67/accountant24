@@ -8,7 +8,9 @@ import { initialize, trackEvent } from "@aptabase/electron/main";
 import { ipcMain } from "electron";
 import { consumeOnce, isAnalyticsEnabled } from "./settings";
 
-type EventProps = Record<string, string | number>;
+/** Aptabase's own prop types. Booleans carry the flags a plugin event is read
+ *  along (official or not) without spending a string on "true"/"false". */
+type EventProps = Record<string, string | number | boolean>;
 
 // Not a secret — Aptabase app keys are embedded in the client, like a website
 // analytics id. EU region instance.
@@ -84,33 +86,55 @@ export function trackUpdateFailed(kind: "check" | "download"): void {
   track("update_failed", { kind });
 }
 
-/** Record a skill add from a repository landing in the store. Counts only —
- *  custom skill names and repos never leave the machine. */
-export function trackSkillAdded(addedCount: number, skippedCount: number): void {
-  track("skill_added", { added_count: addedCount, skipped_count: skippedCount });
+/** Who asked for an install: the user picking a plugin out of the marketplace,
+ *  or the app installing one of the plugins a new workspace starts with. The
+ *  two fail for different reasons and only one of them is ever retried, so
+ *  every install event carries which it was. */
+export type PluginInstallSource = "marketplace" | "default";
+
+/** Record a plugin install landing in the store — the ending of the
+ *  `plugin_install_*` lifecycle that `plugin_install_started` opens and
+ *  `plugin_install_failed` is the other half of. Counts and flags only: plugin
+ *  names and repos never leave the machine. `official` says it came from the
+ *  Accountant24 account, which is the split every plugin number is read
+ *  along. */
+export function trackPluginInstallSucceeded(source: PluginInstallSource, official: boolean, skillCount: number): void {
+  track("plugin_install_succeeded", { source, official, skill_count: skillCount });
 }
 
-export type SkillAddFailReason = "invalid_source" | "not_found" | "no_skills" | "fetch_failed" | "other";
+export type PluginInstallFailReason =
+  | "invalid_source"
+  | "not_found"
+  | "no_plugin"
+  | "invalid_plugin"
+  | "app_too_old"
+  | "collision"
+  | "fetch_failed"
+  | "other";
 
-/** Record a failed skill add. Structural reason only — error text can carry
- *  repo names and paths, so it never leaves the machine. */
-export function trackSkillAddFailed(reason: SkillAddFailReason): void {
-  track("skill_add_failed", { reason });
+/** Record a plugin install that did not land, the other ending to
+ *  `plugin_install_succeeded`. Structural reason only — error text can carry
+ *  repo names and paths, so it never leaves the machine. A `default` failure
+ *  is retried on the next launch, so it counts attempts rather than users. */
+export function trackPluginInstallFailed(source: PluginInstallSource, reason: PluginInstallFailReason): void {
+  track("plugin_install_failed", { source, reason });
 }
 
-/** Record a custom skill being removed (built-ins can't be). */
-export function trackSkillRemoved(): void {
-  track("skill_removed");
+/** Record an installed plugin being uninstalled. One event rather than a
+ *  `plugin_uninstall_*` lifecycle: uninstalling is a local delete with nothing
+ *  to fail on and no confirmation worth measuring separately. Uninstalling is
+ *  the only way to turn a plugin off, so this carries the signal a disable
+ *  switch would. */
+export function trackPluginUninstalled(official: boolean): void {
+  track("plugin_uninstalled", { official });
 }
 
-/** Record a custom skill being switched on. */
-export function trackSkillEnabled(): void {
-  track("skill_enabled");
-}
+export type MarketplaceLoadFailKind = "fetch_failed" | "invalid_index" | "timeout";
 
-/** Record a custom skill being switched off. */
-export function trackSkillDisabled(): void {
-  track("skill_disabled");
+/** Record the marketplace index failing to load. Coarse kind only, like the
+ *  updater: mostly offline noise, and the messages can carry URLs. */
+export function trackMarketplaceLoadFailed(kind: MarketplaceLoadFailKind): void {
+  track("marketplace_load_failed", { kind });
 }
 
 /** Register the renderer→main analytics channel. The renderer fires

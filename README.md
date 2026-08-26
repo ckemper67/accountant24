@@ -49,7 +49,7 @@ Tell the agent once — it remembers and applies it when it matters.
 
 > Create a skill that compares my spending this month to the previous month and shows where I spent more.
 
-Skills are reusable playbooks the agent follows step by step, like monthly reviews or subscription audits. Use the built-in ones or create your own.
+Skills are reusable playbooks the agent follows step by step, like monthly reviews or subscription audits. Install them from the [plugin marketplace](https://accountant24.ai/docs/marketplace) or [create your own](https://accountant24.ai/docs/create-a-plugin).
 
 ### Track every change with git
 
@@ -134,6 +134,10 @@ Both are remarkable pieces of software.
 ## Contributing
 
 This is a personal project I use every day, and I'd love to hear from anyone else using it. Bug reports, ideas, feedback, pull requests — all welcome. If you're planning a bigger change, open an issue first so we can talk it through.
+
+## Marketplace
+
+Accountant24 has a [marketplace](https://accountant24.ai/docs/marketplace) for plugins. Browse what the community has published and install a plugin right from **Settings → Plugins** in the app. Listing is automatic and nobody reviews the plugins, so [install only plugins you trust](https://accountant24.ai/docs/marketplace#install-only-plugins-you-trust). To build and publish a plugin of your own, see [Create a plugin](https://accountant24.ai/docs/create-a-plugin).
 
 ## License
 
