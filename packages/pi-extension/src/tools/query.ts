@@ -48,6 +48,20 @@ const Params = Type.Object({
   ),
   depth: Type.Optional(Type.Number({ description: "Account depth limit (2 = Assets:Bank, not Assets:Bank:Checking)" })),
   invert: Type.Optional(Type.Boolean({ description: "Flip signs — show expenses as positive (--invert)" })),
+  valuation: Type.Optional(
+    Type.Union([Type.Literal("cost"), Type.Literal("market")], {
+      description:
+        "Convert commodity amounts instead of showing native quantities. cost: use each transaction's " +
+        "recorded @/@@ price (--cost). market: use the latest P price directives (--market), optionally " +
+        "converted into `value_commodity`.",
+    }),
+  ),
+  value_commodity: Type.Optional(
+    Type.String({
+      description:
+        "Target commodity for valuation=market, e.g. 'EUR'. Ignored for valuation=cost or when valuation is unset.",
+    }),
+  ),
   output_format: Type.Optional(
     Type.Union([Type.Literal("txt"), Type.Literal("csv"), Type.Literal("json"), Type.Literal("tsv")], {
       description: "Output format. csv/json/tsv for machine-readable data",
@@ -64,7 +78,13 @@ export const queryTool: ToolDefinition<typeof Params, QueryLedgerResult> = {
   description:
     "Run an hledger report against the journal. Supports balance, register, income statement, balance sheet, and more with structured filters.",
   promptSnippet: "Run hledger reports (balance, register, income statement, etc.)",
-  promptGuidelines: [`Available query report types: ${REPORT_TYPES}.`],
+  promptGuidelines: [
+    `Available query report types: ${REPORT_TYPES}.`,
+    "To track investment value: scope to the investment accounts with account_pattern (e.g. 'Assets:Investments'), " +
+      "then set valuation='market' with value_commodity set to the base currency to see current market value " +
+      "(needs P price directives from add_prices/fetch_prices). Set valuation='cost' instead to see original " +
+      "purchase cost basis; compare the two to see unrealized gain/loss.",
+  ],
   parameters: Params,
 
   async execute(_id, params, signal) {

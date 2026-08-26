@@ -51,6 +51,12 @@ function buildQueryArgs(params: any, resolved: string): string[] {
   if (params.invert) args.push("--invert");
   if (params.output_format) args.push("-O", params.output_format);
 
+  if (params.valuation === "cost") args.push("--cost");
+  else if (params.valuation === "market") {
+    if (params.value_commodity) args.push("--exchange", params.value_commodity);
+    else args.push("--market");
+  }
+
   if (params.report === "reg" || params.report === "aregister") {
     const width = (process.stdout.columns || 80) - TUI_CHROME_WIDTH;
     args.push(`--width=${width}`);
