@@ -86,6 +86,7 @@ const PROMPT_GUIDELINES = [
   "If a required column is not found, supply column_map with the exact header names from the CSV.",
   "Leading metadata/preamble rows before the header are skipped automatically; only set skip_rows if the wrong header line is picked.",
   "If the tool errors that it cannot determine the format, or that the content doesn't match, read the file yourself to identify its real format, then retry with format set explicitly.",
+  "OFX/QFX/QBO statements often report an ending balance (shown as 'Bank-reported ledger balance' in the result, even in dry_run). Compare it with the ledger's balance for the account (query) and record it with add_balance_assertions if it matches -- a missing/gap statement then fails loudly at the point of the gap instead of drifting unnoticed. A credit card's owed-balance sign may need flipping; a balance date after the statement period may include activity not in this file.",
 ];
 
 export const importTransactionsTool: ToolDefinition<typeof Params, ImportResult> = {
