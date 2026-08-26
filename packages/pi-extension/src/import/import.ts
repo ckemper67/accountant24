@@ -102,6 +102,30 @@ export interface ImportDetection {
   sampleRow?: StatementRow;
 }
 
+/** The bank-reported ending balance for a statement (OFX/QFX/QBO only -- CSV and QIF carry
+ *  no such field). Surfaced so the caller can compare it against the ledger and record a
+ *  balance assertion (add_balance_assertions) rather than having the import tool write one
+ *  itself: a wrong/missing statement can then fail loudly at the point of the gap instead of
+ *  drifting silently, but a bad sign convention or off-by-one date needs a human/LLM check
+ *  first, not an automatic write. */
+export interface StatementBalance {
+  /** Raw BALAMT string, not yet parsed -- parse it the same way as the transaction amounts
+   *  (number_format "us" for OFX) before comparing. */
+  amount: string;
+  currency: string;
+  /** ISO date the balance is true as-of (DTASOF). Some issuers stamp this with the download
+   *  time rather than the statement period end, so it can postdate the transactions below. */
+  asOfDate: string;
+  /** ISO end date of the transaction list (DTEND), when available, for cross-checking
+   *  against asOfDate -- some issuers emit DTEND exclusive (the day after the last
+   *  transaction), so treat a mismatch as a signal to double check, not as an error. */
+  statementEndDate?: string;
+  /** "cc" or "bank", when known. A credit card's BALAMT sign (owed-balance-positive vs.
+   *  owed-balance-negative) is issuer-dependent and does not always match hledger's
+   *  negative-liability convention -- flag this rather than silently asserting the wrong sign. */
+  accountKind?: "bank" | "cc";
+}
+
 export interface ImportResult {
   parsed: number;
   imported: number;
@@ -119,6 +143,10 @@ export interface ImportResult {
   /** On success: results from addTransactions. */
   transactions?: Array<{ transactionText: string; fullFilePath: string }>;
   diffs?: Array<{ fullFilePath: string; diff: string }>;
+  /** The statement's reported ending balance, when the source format carries one. Present
+   *  regardless of dry_run and even when every row deduped as already-imported -- that
+   *  all-duplicates case is exactly when a coverage gap is worth checking. */
+  statementBalance?: StatementBalance;
 }
 
 /** Shared options for the format-agnostic back-end. */
@@ -134,6 +162,8 @@ interface CoreParams {
   encoding: string;
   /** CSV detection metadata to echo back (absent for inline-row imports). */
   detection?: ImportDetection;
+  /** OFX-only: the statement's reported ending balance, echoed back in the result. */
+  statementBalance?: StatementBalance;
 }
 
 const MAX_SAMPLE = 5;
@@ -176,6 +206,26 @@ export function renderImportResult(result: ImportResult): string {
   if (result.balancing && result.balancing.length > 0) {
     const parts = result.balancing.map((b) => `${b.direction} -> ${b.account}`);
     lines.push(`Balancing (uncategorized): ${parts.join(" | ")}`);
+  }
+
+  const sb = result.statementBalance;
+  if (sb) {
+    lines.push("");
+    // Some issuers stamp DTASOF with the download time rather than the statement period
+    // end -- when it postdates the transaction list, the balance may include activity not
+    // in this file, so flag it instead of presenting the balance as directly assertable.
+    const dateNote =
+      sb.statementEndDate && sb.statementEndDate < sb.asOfDate
+        ? ` (transactions through ${sb.statementEndDate} -- balance date is after the statement period; it may reflect activity not in this file)`
+        : "";
+    const ccNote =
+      sb.accountKind === "cc"
+        ? " Credit card: the owed-balance sign is issuer-dependent and may need flipping to match hledger's negative-liability convention."
+        : "";
+    lines.push(
+      `Bank-reported ledger balance: ${sb.amount} ${sb.currency} as of ${sb.asOfDate}${dateNote}. ` +
+        `Compare with the ledger balance for this account before recording an assertion (add_balance_assertions).${ccNote}`,
+    );
   }
 
   const d = result.detection;
@@ -232,7 +282,12 @@ function formatSample(p: AddTransactionParams): string {
   return [header, ...postingLines].join("\n");
 }
 
-function emptyResult(encoding: string, dryRun: boolean, detection?: ImportDetection): ImportResult {
+function emptyResult(
+  encoding: string,
+  dryRun: boolean,
+  detection?: ImportDetection,
+  statementBalance?: StatementBalance,
+): ImportResult {
   return {
     parsed: 0,
     imported: 0,
@@ -243,6 +298,7 @@ function emptyResult(encoding: string, dryRun: boolean, detection?: ImportDetect
     dryRun,
     sample: [],
     detection,
+    statementBalance,
   };
 }
 
@@ -290,13 +346,26 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
     if (!looksLikeOfx(text)) {
       throw formatError(params.file_path, "File does not look like OFX (no OFXHEADER/<OFX> found)", text);
     }
-    const { rows, accountCount } = parseOfx(text);
+    const { rows, accountCount, accountKind, ledgerBalance, statementEndDate, statementCurrency } = parseOfx(text);
     if (accountCount > 1) {
       throw new Error(
         `"${params.file_path}" contains ${accountCount} account blocks; this importer only supports one ` +
           `account per OFX file. Split the file or import each account separately.`,
       );
     }
+
+    // Omit the balance entirely rather than emit one with no currency to attach to it.
+    const balanceCurrency = statementCurrency || params.currency;
+    const statementBalance: StatementBalance | undefined =
+      ledgerBalance && balanceCurrency
+        ? {
+            amount: ledgerBalance.amount,
+            currency: balanceCurrency,
+            asOfDate: ledgerBalance.asOfDate,
+            statementEndDate,
+            accountKind,
+          }
+        : undefined;
 
     return importStatementRows(
       rows,
@@ -306,6 +375,7 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
         // could otherwise misread e.g. "1.234" as European thousands-grouping.
         number_format: "us",
         encoding,
+        statementBalance,
       },
       signal,
       rows.map((r) => r.fitid),
@@ -368,7 +438,7 @@ async function importStatementRows(
   fitids?: Array<string | undefined>,
 ): Promise<ImportResult> {
   if (rows.length === 0) {
-    return emptyResult(core.encoding, core.dry_run ?? false, core.detection);
+    return emptyResult(core.encoding, core.dry_run ?? false, core.detection, core.statementBalance);
   }
 
   // Detect formats (or use overrides). Sample ALL rows, not a prefix: a wrong number
@@ -491,6 +561,7 @@ async function importStatementRows(
     sample,
     detection: core.detection,
     balancing,
+    statementBalance: core.statementBalance,
   };
 
   if (core.dry_run) {

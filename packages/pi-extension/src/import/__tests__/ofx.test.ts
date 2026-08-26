@@ -56,6 +56,14 @@ NEWFILEUID:NONE
                         <MEMO>January salary
                     </STMTTRN>
                 </BANKTRANLIST>
+                <AVAILBAL>
+                    <BALAMT>1999.99
+                    <DTASOF>20250131000000[-8:PST]
+                </AVAILBAL>
+                <LEDGERBAL>
+                    <BALAMT>1954.50
+                    <DTASOF>20250131000000[-8:PST]
+                </LEDGERBAL>
             </STMTRS>
         </STMTTRNRS>
     </BANKMSGSRSV1>
@@ -170,5 +178,121 @@ describe("parseOfx()", () => {
   test("should return no rows for text with no STMTTRN blocks", () => {
     const { rows } = parseOfx("<OFX><BANKMSGSRSV1></BANKMSGSRSV1></OFX>");
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe("parseOfx() ledgerBalance", () => {
+  test("should extract BALAMT and DTASOF from LEDGERBAL, not AVAILBAL", () => {
+    const { ledgerBalance } = parseOfx(SAMPLE_OFX);
+    // AVAILBAL is 1999.99 in the fixture -- reading it instead would silently pass a
+    // different number through as the "ledger" balance.
+    expect(ledgerBalance?.amount).toBe("1954.50");
+    expect(ledgerBalance?.asOfDate).toBe("2025-01-31");
+  });
+
+  test("should keep the balance amount as a raw string, not a parsed number", () => {
+    const { ledgerBalance } = parseOfx(SAMPLE_OFX);
+    expect(typeof ledgerBalance?.amount).toBe("string");
+  });
+
+  test("should convert a DTASOF with a timezone suffix to ISO YYYY-MM-DD", () => {
+    const ofx = SAMPLE_OFX.replace(
+      "<DTASOF>20250131000000[-8:PST]\n                </LEDGERBAL>",
+      "<DTASOF>20250131\n                </LEDGERBAL>",
+    );
+    const { ledgerBalance } = parseOfx(ofx);
+    expect(ledgerBalance?.asOfDate).toBe("2025-01-31");
+  });
+
+  test("should return undefined when LEDGERBAL is absent", () => {
+    const noBalance = SAMPLE_OFX.replace(/<LEDGERBAL>[\s\S]*?<\/LEDGERBAL>\n/, "");
+    const { ledgerBalance } = parseOfx(noBalance);
+    expect(ledgerBalance).toBeUndefined();
+  });
+
+  test("should return undefined when LEDGERBAL is present but BALAMT is missing", () => {
+    const noAmount = SAMPLE_OFX.replace(
+      "<BALAMT>1954.50\n                    <DTASOF>20250131000000[-8:PST]",
+      "<DTASOF>20250131000000[-8:PST]",
+    );
+    const { ledgerBalance } = parseOfx(noAmount);
+    expect(ledgerBalance).toBeUndefined();
+  });
+
+  test("should return undefined, not throw, when DTASOF is malformed", () => {
+    const badDate = SAMPLE_OFX.replace(
+      "<LEDGERBAL>\n                    <BALAMT>1954.50\n                    <DTASOF>20250131000000[-8:PST]",
+      "<LEDGERBAL>\n                    <BALAMT>1954.50\n                    <DTASOF>notadate",
+    );
+    expect(() => parseOfx(badDate)).not.toThrow();
+    const { ledgerBalance } = parseOfx(badDate);
+    expect(ledgerBalance).toBeUndefined();
+  });
+
+  test("should still return transaction rows when the balance is malformed", () => {
+    const badDate = SAMPLE_OFX.replace(
+      "<LEDGERBAL>\n                    <BALAMT>1954.50\n                    <DTASOF>20250131000000[-8:PST]",
+      "<LEDGERBAL>\n                    <BALAMT>1954.50\n                    <DTASOF>notadate",
+    );
+    const { rows } = parseOfx(badDate);
+    expect(rows).toHaveLength(2);
+  });
+});
+
+describe("parseOfx() accountKind", () => {
+  test("should return 'bank' for a single BANKACCTFROM block", () => {
+    const { accountKind } = parseOfx(SAMPLE_OFX);
+    expect(accountKind).toBe("bank");
+  });
+
+  test("should return 'cc' for a single CCACCTFROM block", () => {
+    const cc = `<OFX><CCACCTFROM><ACCTID>CARD1</ACCTID></CCACCTFROM></OFX>`;
+    const { accountKind } = parseOfx(cc);
+    expect(accountKind).toBe("cc");
+  });
+
+  test("should return undefined when no account block is present", () => {
+    const { accountKind } = parseOfx("<OFX></OFX>");
+    expect(accountKind).toBeUndefined();
+  });
+
+  test("should return undefined when more than one account block is present", () => {
+    const twoAccounts = `<OFX>
+      <BANKACCTFROM><BANKID>111</BANKID><ACCTID>AAA</ACCTID></BANKACCTFROM>
+      <BANKACCTFROM><BANKID>222</BANKID><ACCTID>BBB</ACCTID></BANKACCTFROM>
+    </OFX>`;
+    const { accountKind } = parseOfx(twoAccounts);
+    expect(accountKind).toBeUndefined();
+  });
+});
+
+describe("parseOfx() statementEndDate", () => {
+  test("should extract DTEND from BANKTRANLIST as ISO YYYY-MM-DD", () => {
+    const { statementEndDate } = parseOfx(SAMPLE_OFX);
+    expect(statementEndDate).toBe("2025-01-31");
+  });
+
+  test("should return undefined when BANKTRANLIST is absent", () => {
+    const { statementEndDate } = parseOfx("<OFX></OFX>");
+    expect(statementEndDate).toBeUndefined();
+  });
+
+  test("should return undefined when BANKTRANLIST is present but DTEND is absent", () => {
+    const noEnd = SAMPLE_OFX.replace("<DTEND>20250131000000[-8:PST]\n", "");
+    const { statementEndDate } = parseOfx(noEnd);
+    expect(statementEndDate).toBeUndefined();
+  });
+});
+
+describe("parseOfx() statementCurrency", () => {
+  test("should return the CURDEF value", () => {
+    const { statementCurrency } = parseOfx(SAMPLE_OFX);
+    expect(statementCurrency).toBe("USD");
+  });
+
+  test("should return undefined when CURDEF is absent", () => {
+    const noCurdef = SAMPLE_OFX.replace("<CURDEF>USD\n", "");
+    const { statementCurrency } = parseOfx(noCurdef);
+    expect(statementCurrency).toBeUndefined();
   });
 });

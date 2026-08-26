@@ -74,6 +74,12 @@ VERSION:102
 </OFX>
 `;
 
+// SIMPLE_OFX with a <LEDGERBAL> block added, for statementBalance tests.
+const OFX_WITH_BALANCE = SIMPLE_OFX.replace(
+  "</BANKTRANLIST>",
+  "</BANKTRANLIST>\n                <LEDGERBAL>\n                    <BALAMT>1954.50\n                    <DTASOF>20250131000000[-8:PST]\n                </LEDGERBAL>",
+);
+
 const ACCOUNT = "Assets:Bank:Checking";
 const BUCKETS = {
   uncategorized_expense_account: "expenses:uncategorized",
@@ -262,6 +268,17 @@ describe("runImport() real import", () => {
 
     const main = readFileSync(join(LEDGER, "main.journal"), "utf-8");
     expect(main).toContain("include 2025/01.journal");
+  });
+
+  test("should leave statementBalance undefined for a CSV import (CSV has no such field)", async () => {
+    const result = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(result.statementBalance).toBeUndefined();
   });
 });
 
@@ -787,6 +804,67 @@ describe("runImport() OFX", () => {
     expect(second.imported).toBe(0);
     expect(second.skipped).toBe(2);
   });
+
+  test("should surface LEDGERBAL as statementBalance when present", async () => {
+    writeFileSync(join(FILES, "statement.ofx"), OFX_WITH_BALANCE);
+    const result = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+
+    expect(result.statementBalance?.amount).toBe("1954.50");
+    expect(result.statementBalance?.currency).toBe("USD");
+    expect(result.statementBalance?.asOfDate).toBe("2025-01-31");
+    expect(result.statementBalance?.accountKind).toBe("bank");
+  });
+
+  test("should leave statementBalance undefined when the statement has no LEDGERBAL", async () => {
+    writeFileSync(join(FILES, "statement.ofx"), SIMPLE_OFX);
+    const result = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+
+    expect(result.statementBalance).toBeUndefined();
+  });
+
+  test("should surface statementBalance in a dry_run result", async () => {
+    writeFileSync(join(FILES, "statement.ofx"), OFX_WITH_BALANCE);
+    const result = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, dry_run: true, ...BUCKETS });
+
+    expect(result.statementBalance?.amount).toBe("1954.50");
+  });
+
+  test("should surface statementBalance even when every row dedups as already-imported", async () => {
+    // The all-duplicates case is exactly when a coverage gap is worth checking: the user
+    // re-imports an old statement to check coverage, all rows dedup, but the balance still
+    // reveals whether the ledger and the bank agree.
+    writeFileSync(join(FILES, "statement.ofx"), OFX_WITH_BALANCE);
+    const first = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    const importIds = [...content.matchAll(/; import_id: (\S+)/g)].map((m) => m[1]);
+
+    const mockTxns = importIds.map((id, i) => ({
+      ttags: [["import_id", id]],
+      tdate: "2025-01-15",
+      tdescription: `tx${i}`,
+      tpostings: [{ paccount: ACCOUNT, pamount: [] }],
+    }));
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const second = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+    expect(second.imported).toBe(0);
+    expect(second.skipped).toBe(2);
+    expect(second.statementBalance?.amount).toBe("1954.50");
+    expect(first.imported).toBe(2); // sanity check the fixture actually had 2 rows
+  });
+
+  test("should surface statementBalance even when the OFX file has zero transaction rows", async () => {
+    const zeroRows = OFX_WITH_BALANCE.replace(/<STMTTRN>[\s\S]*?<\/STMTTRN>\n\s*/g, "");
+    writeFileSync(join(FILES, "statement.ofx"), zeroRows);
+    const result = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+
+    expect(result.parsed).toBe(0);
+    expect(result.statementBalance?.amount).toBe("1954.50");
+  });
 });
 
 // ── renderImportResult() ─────────────────────────────────────────────
@@ -884,5 +962,89 @@ describe("renderImportResult()", () => {
     expect(text).toContain("Header: detected on line 1 (skipped 0 preamble line(s)).");
     expect(text).not.toContain("Preamble:");
     expect(text).not.toContain("First row ->");
+  });
+
+  test("should render the statement balance line when statementBalance is present", () => {
+    const withBalance: ImportResult = {
+      ...full,
+      statementBalance: { amount: "1954.50", currency: "USD", asOfDate: "2025-01-31" },
+    };
+    const text = renderImportResult(withBalance);
+    expect(text).toContain(
+      "Bank-reported ledger balance: 1954.50 USD as of 2025-01-31. Compare with the ledger balance for this " +
+        "account before recording an assertion (add_balance_assertions).",
+    );
+  });
+
+  test("should not render a statement balance line when statementBalance is absent", () => {
+    const text = renderImportResult(full);
+    expect(text).not.toContain("Bank-reported ledger balance");
+  });
+
+  test("should flag when the balance date is after the statement's transaction end date", () => {
+    const stale: ImportResult = {
+      ...full,
+      statementBalance: {
+        amount: "1954.50",
+        currency: "USD",
+        asOfDate: "2025-02-12",
+        statementEndDate: "2025-01-31",
+      },
+    };
+    const text = renderImportResult(stale);
+    expect(text).toContain(
+      "as of 2025-02-12 (transactions through 2025-01-31 -- balance date is after the statement period; " +
+        "it may reflect activity not in this file).",
+    );
+  });
+
+  test("should not flag when the balance date matches the statement's transaction end date", () => {
+    const current: ImportResult = {
+      ...full,
+      statementBalance: {
+        amount: "1954.50",
+        currency: "USD",
+        asOfDate: "2025-01-31",
+        statementEndDate: "2025-01-31",
+      },
+    };
+    const text = renderImportResult(current);
+    expect(text).not.toContain("balance date is after the statement period");
+  });
+
+  test("should note the credit-card sign convention when accountKind is 'cc'", () => {
+    const cc: ImportResult = {
+      ...full,
+      statementBalance: { amount: "-1954.50", currency: "USD", asOfDate: "2025-01-31", accountKind: "cc" },
+    };
+    const text = renderImportResult(cc);
+    expect(text).toContain(
+      "Credit card: the owed-balance sign is issuer-dependent and may need flipping to match hledger's " +
+        "negative-liability convention.",
+    );
+  });
+
+  test("should not add the credit-card note when accountKind is 'bank'", () => {
+    const bank: ImportResult = {
+      ...full,
+      statementBalance: { amount: "1954.50", currency: "USD", asOfDate: "2025-01-31", accountKind: "bank" },
+    };
+    const text = renderImportResult(bank);
+    expect(text).not.toContain("Credit card:");
+  });
+
+  test("should omit the statement balance section in the minimal (no optional fields) render", () => {
+    const minimal: ImportResult = {
+      parsed: 0,
+      imported: 0,
+      skipped: 0,
+      encoding: "inline",
+      numberFormat: "us",
+      dateOrder: "mdy",
+      dryRun: false,
+      sample: [],
+    };
+    const text = renderImportResult(minimal);
+    expect(text).not.toContain("Bank-reported ledger balance");
   });
 });
