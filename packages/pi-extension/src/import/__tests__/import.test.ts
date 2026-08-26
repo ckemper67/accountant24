@@ -682,6 +682,30 @@ describe("runImport() OFX", () => {
     expect(content).toContain("ACME Corp");
   });
 
+  test("should detect OFX from the .qfx extension and import its transactions", async () => {
+    writeFileSync(join(FILES, "statement.qfx"), SIMPLE_OFX);
+    const result = await runImport({
+      file_path: "files/statement.qfx",
+      account: ACCOUNT,
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(2);
+    expect(result.imported).toBe(2);
+  });
+
+  test("should detect OFX from the .qbo extension and import its transactions", async () => {
+    writeFileSync(join(FILES, "statement.qbo"), SIMPLE_OFX);
+    const result = await runImport({
+      file_path: "files/statement.qbo",
+      account: ACCOUNT,
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(2);
+    expect(result.imported).toBe(2);
+  });
+
   test("should write the bank-assigned FITID as a provenance tag, not as the import_id", async () => {
     writeFileSync(join(FILES, "statement.ofx"), SIMPLE_OFX);
     await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });

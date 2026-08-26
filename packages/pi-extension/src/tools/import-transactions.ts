@@ -29,7 +29,7 @@ const ColumnMap = Type.Optional(
 const Params = Type.Object({
   file_path: Type.String({
     description:
-      "Workspace-relative path to the CSV or OFX/QFX bank export, e.g. files/2025/01/statement.csv. " +
+      "Workspace-relative path to the CSV or OFX/QFX/QBO bank export, e.g. files/2025/01/statement.csv. " +
       "For PDF/image statements, use extract_text first to get the text, then import_extracted_transactions.",
   }),
   account: Type.String({
@@ -38,7 +38,7 @@ const Params = Type.Object({
   format: Type.Optional(
     Type.Union([Type.Literal("csv"), Type.Literal("ofx")], {
       description:
-        "File format. Omit to detect from the extension (.csv/.tsv -> csv, .ofx/.qfx -> ofx). If detection " +
+        "File format. Omit to detect from the extension (.csv/.tsv -> csv, .ofx/.qfx/.qbo -> ofx). If detection " +
         "fails or the content doesn't match, the tool errors with a preview of the file's first lines -- read " +
         "the file yourself to confirm the real format, then retry with this set explicitly.",
     }),
@@ -78,7 +78,7 @@ const PROMPT_SNIPPET =
   "Bulk-import a CSV bank export (auto-detects encoding, number format, date order; deduplicates on re-import)";
 
 const PROMPT_GUIDELINES = [
-  "import_transactions reads a CSV or OFX/QFX file by path. For PDF or image statements, use extract_text then import_extracted_transactions instead.",
+  "import_transactions reads a CSV or OFX/QFX/QBO file by path. For PDF or image statements, use extract_text then import_extracted_transactions instead.",
   "Run with dry_run:true before the real import to confirm parsed counts, detected formats, and a sample.",
   UNCATEGORIZED_ACCOUNTS_GUIDELINE,
   RECATEGORIZE_GUIDELINE,

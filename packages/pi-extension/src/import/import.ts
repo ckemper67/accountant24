@@ -33,14 +33,16 @@ import { looksLikeOfx, parseOfx } from "./ofx";
 export type ImportFileFormat = "csv" | "ofx";
 
 export interface ImportParams {
-  /** Workspace-relative path to the statement file (CSV or OFX/QFX). */
+  /** Workspace-relative path to the statement file (CSV or OFX/QFX/QBO). */
   file_path: string;
   /** Ledger account this statement belongs to, e.g. "Assets:Bank:Checking". */
   account: string;
   /**
-   * File format; omit to detect from the file extension (.csv/.tsv -> csv, .ofx/.qfx ->
-   * ofx). If detection fails, or the content doesn't match the chosen/detected format, the
-   * tool errors with a preview of the file so you can inspect it and retry explicitly.
+   * File format; omit to detect from the file extension (.csv/.tsv -> csv, .ofx/.qfx/.qbo ->
+   * ofx -- QFX and QBO are the same OFX SGML format under different filename conventions
+   * used by Quicken and QuickBooks Web Connect respectively). If detection fails, or the
+   * content doesn't match the chosen/detected format, the tool errors with a preview of the
+   * file so you can inspect it and retry explicitly.
    */
   format?: ImportFileFormat;
   /** Statement currency (used when the CSV has no currency column). */
@@ -249,7 +251,9 @@ function emptyResult(encoding: string, dryRun: boolean, detection?: ImportDetect
 /** Detect the file format from its extension; undefined if not recognized. */
 function detectFormatFromExtension(filePath: string): ImportFileFormat | undefined {
   const ext = filePath.toLowerCase().split(".").pop();
-  if (ext === "ofx" || ext === "qfx") return "ofx";
+  // .qfx (Quicken) and .qbo (QuickBooks Web Connect) are the same OFX SGML format under a
+  // different filename convention -- both route to the same parser as .ofx.
+  if (ext === "ofx" || ext === "qfx" || ext === "qbo") return "ofx";
   if (ext === "csv" || ext === "tsv") return "csv";
   return undefined;
 }
