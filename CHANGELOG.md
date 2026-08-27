@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.1
+
+[compare changes](https://github.com/machulav/accountant24/compare/v0.3.0...v0.3.1)
+
+### 🐞 Bug Fixes
+
+- Show previous chats after the workspace moved ([#68](https://github.com/machulav/accountant24/pull/68))
+- Move ~/Accountant24 into place over a leftover ~/.accountant24 ([#69](https://github.com/machulav/accountant24/pull/69))
+
 ## v0.3.0
 
 [compare changes](https://github.com/machulav/accountant24/compare/v0.2.16...v0.3.0)
