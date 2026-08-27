@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.3.0
+
+[compare changes](https://github.com/machulav/accountant24/compare/v0.2.16...v0.3.0)
+
+### 🚀 Features
+
+- Create the workspace at launch instead of on the first message ([#61](https://github.com/machulav/accountant24/pull/61))
+- ⚠️  Move the workspace to ~/.accountant24 and add a --workspace flag ([#62](https://github.com/machulav/accountant24/pull/62))
+- ⚠️  Add the plugin marketplace ([#63](https://github.com/machulav/accountant24/pull/63))
+- Bundle the docs so the agent can answer questions about the app ([#65](https://github.com/machulav/accountant24/pull/65))
+- Pick up new and changed plugins without an app restart ([#66](https://github.com/machulav/accountant24/pull/66))
+- ⚠️  Require a description in plugin manifests ([#67](https://github.com/machulav/accountant24/pull/67))
+
+### 🏡 Chore
+
+- Skip the verify stop hook when the working tree is unchanged ([#64](https://github.com/machulav/accountant24/pull/64))
+
+#### ⚠️ Breaking Changes
+
+- ⚠️  Move the workspace to ~/.accountant24 and add a --workspace flag ([#62](https://github.com/machulav/accountant24/pull/62))
+- ⚠️  Add the plugin marketplace ([#63](https://github.com/machulav/accountant24/pull/63))
+- ⚠️  Require a description in plugin manifests ([#67](https://github.com/machulav/accountant24/pull/67))
+
 ## v0.2.16
 
 [compare changes](https://github.com/machulav/accountant24/compare/v0.2.15...v0.2.16)
