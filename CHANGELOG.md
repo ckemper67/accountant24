@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.3
+
+[compare changes](https://github.com/machulav/accountant24/compare/v0.3.2...v0.3.3)
+
+### 🚀 Features
+
+- Suggest prompt ideas under the composer on the New Chat page ([#77](https://github.com/machulav/accountant24/pull/77))
+
+### 📖 Documentation
+
+- Add Memory and Workspace pages ([#78](https://github.com/machulav/accountant24/pull/78))
+
 ## v0.3.2
 
 [compare changes](https://github.com/machulav/accountant24/compare/v0.3.1...v0.3.2)
