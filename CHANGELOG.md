@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.4
+
+[compare changes](https://github.com/machulav/accountant24/compare/v0.3.3...v0.3.4)
+
+### 🚀 Features
+
+- Run plugin scripts with a bundled uv, no Python install needed ([#79](https://github.com/machulav/accountant24/pull/79))
+
 ## v0.3.3
 
 [compare changes](https://github.com/machulav/accountant24/compare/v0.3.2...v0.3.3)
