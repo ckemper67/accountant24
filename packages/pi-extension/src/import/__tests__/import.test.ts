@@ -35,6 +35,45 @@ const SIMPLE_CSV = [
   "2025-01-20,-15.50,Starbucks,Coffee",
 ].join("\n");
 
+// ── Simple OFX fixture ───────────────────────────────────────────────
+
+const SIMPLE_OFX = `OFXHEADER:100
+DATA:OFXSGML
+VERSION:102
+
+<OFX>
+    <BANKMSGSRSV1>
+        <STMTTRNRS>
+            <STMTRS>
+                <CURDEF>USD
+                <BANKACCTFROM>
+                    <BANKID>123456789
+                    <ACCTID>0001112223
+                </BANKACCTFROM>
+                <BANKTRANLIST>
+                    <STMTTRN>
+                        <TRNTYPE>DEBIT
+                        <DTPOSTED>20250115120000[-8:PST]
+                        <TRNAMT>-45.00
+                        <FITID>FITID-001
+                        <NAME>Whole Foods
+                        <MEMO>Groceries
+                    </STMTTRN>
+                    <STMTTRN>
+                        <TRNTYPE>CREDIT
+                        <DTPOSTED>20250116000000[-8:PST]
+                        <TRNAMT>2000.00
+                        <FITID>FITID-002
+                        <NAME>ACME Corp
+                        <MEMO>January salary
+                    </STMTTRN>
+                </BANKTRANLIST>
+            </STMTRS>
+        </STMTTRNRS>
+    </BANKMSGSRSV1>
+</OFX>
+`;
+
 const ACCOUNT = "Assets:Bank:Checking";
 const BUCKETS = {
   uncategorized_expense_account: "expenses:uncategorized",
@@ -267,6 +306,41 @@ describe("runImport() deduplication", () => {
     expect(second.imported).toBe(0);
     expect(second.skipped).toBe(3);
     expect(second.parsed).toBe(3);
+  });
+
+  test("should recognize a CSV re-import of a statement already imported via OFX (same id regardless of source)", async () => {
+    // Import via OFX first.
+    writeFileSync(join(FILES, "statement.ofx"), SIMPLE_OFX);
+    const ofxResult = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+    expect(ofxResult.imported).toBe(2);
+
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    const importIds = [...content.matchAll(/; import_id: (\S+)/g)].map((m) => m[1]);
+    expect(importIds).toHaveLength(2);
+
+    const mockTxns = importIds.map((id, i) => ({
+      ttags: [["import_id", id]],
+      tdate: "2025-01-15",
+      tdescription: `tx${i}`,
+      tpostings: [{ paccount: ACCOUNT, pamount: [] }],
+    }));
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    // Re-import the same two transactions via CSV: same (account, date, amount) means the
+    // same import_id, so both are recognized without any cross-source handling.
+    const csvResult = await runImport({
+      file_path: "files/statement.csv",
+      account: ACCOUNT,
+      currency: "USD",
+      ...BUCKETS,
+    });
+
+    expect(csvResult.skipped).toBe(2); // Whole Foods and ACME Corp rows both match
+    expect(csvResult.imported).toBe(1); // only the Starbucks row (not in the OFX statement) is new
   });
 });
 
@@ -587,6 +661,131 @@ describe("runImport() error handling", () => {
     expect(result.parsed).toBe(0);
     expect(result.imported).toBe(0);
     expect(result.skipped).toBe(0);
+  });
+});
+
+// ── OFX import tests ─────────────────────────────────────────────────
+
+describe("runImport() OFX", () => {
+  test("should detect OFX from the .ofx extension and import its transactions", async () => {
+    writeFileSync(join(FILES, "statement.ofx"), SIMPLE_OFX);
+    const result = await runImport({
+      file_path: "files/statement.ofx",
+      account: ACCOUNT,
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(2);
+    expect(result.imported).toBe(2);
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    expect(content).toContain("Whole Foods");
+    expect(content).toContain("ACME Corp");
+  });
+
+  test("should detect OFX from the .qfx extension and import its transactions", async () => {
+    writeFileSync(join(FILES, "statement.qfx"), SIMPLE_OFX);
+    const result = await runImport({
+      file_path: "files/statement.qfx",
+      account: ACCOUNT,
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(2);
+    expect(result.imported).toBe(2);
+  });
+
+  test("should detect OFX from the .qbo extension and import its transactions", async () => {
+    writeFileSync(join(FILES, "statement.qbo"), SIMPLE_OFX);
+    const result = await runImport({
+      file_path: "files/statement.qbo",
+      account: ACCOUNT,
+      ...BUCKETS,
+    });
+
+    expect(result.parsed).toBe(2);
+    expect(result.imported).toBe(2);
+  });
+
+  test("should write the bank-assigned FITID as a provenance tag, not as the import_id", async () => {
+    writeFileSync(join(FILES, "statement.ofx"), SIMPLE_OFX);
+    await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    expect(content).toContain("; fitid: FITID-001");
+    expect(content).toContain("; fitid: FITID-002");
+    // The import_id itself is the source-agnostic (account, date, amount, ordinal) hash --
+    // never the raw FITID.
+    expect(content).not.toContain("; import_id: FITID-001");
+    expect(content).not.toContain("; import_id: ofx:");
+  });
+
+  test("should accept an explicit format override regardless of extension", async () => {
+    writeFileSync(join(FILES, "statement.dat"), SIMPLE_OFX);
+    const result = await runImport({
+      file_path: "files/statement.dat",
+      account: ACCOUNT,
+      format: "ofx",
+      ...BUCKETS,
+    });
+    expect(result.imported).toBe(2);
+  });
+
+  test("should error with a content preview when the extension is not recognized", async () => {
+    writeFileSync(join(FILES, "statement.dat"), SIMPLE_OFX);
+    await expect(runImport({ file_path: "files/statement.dat", account: ACCOUNT, ...BUCKETS })).rejects.toThrow(
+      /Cannot determine the format[\s\S]*First 5 lines:[\s\S]*OFXHEADER/,
+    );
+  });
+
+  test("should error with a content preview when format:'ofx' is passed but the content isn't OFX", async () => {
+    writeFileSync(join(FILES, "statement.csv"), SIMPLE_CSV);
+    await expect(
+      runImport({ file_path: "files/statement.csv", account: ACCOUNT, format: "ofx", ...BUCKETS }),
+    ).rejects.toThrow(/does not look like OFX[\s\S]*First 5 lines:/);
+  });
+
+  test("should error with a content preview when the CSV parser can't make sense of OFX content", async () => {
+    writeFileSync(join(FILES, "statement.ofx.csv"), SIMPLE_OFX);
+    await expect(
+      runImport({ file_path: "files/statement.ofx.csv", account: ACCOUNT, format: "csv", ...BUCKETS }),
+    ).rejects.toThrow(/does not look like CSV[\s\S]*First 5 lines:/);
+  });
+
+  test("should throw when the OFX file contains more than one account block", async () => {
+    const twoAccounts = SIMPLE_OFX.replace(
+      "</BANKACCTFROM>",
+      "</BANKACCTFROM>\n<BANKACCTFROM><BANKID>999</BANKID><ACCTID>SECOND</ACCTID></BANKACCTFROM>",
+    );
+    writeFileSync(join(FILES, "multi.ofx"), twoAccounts);
+    await expect(runImport({ file_path: "files/multi.ofx", account: ACCOUNT, ...BUCKETS })).rejects.toThrow(
+      /contains 2 account blocks/,
+    );
+  });
+
+  test("should skip all rows on re-import of the same OFX file", async () => {
+    writeFileSync(join(FILES, "statement.ofx"), SIMPLE_OFX);
+    const first = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+    expect(first.imported).toBe(2);
+
+    const content = readFileSync(join(LEDGER, "2025", "01.journal"), "utf-8");
+    const importIds = [...content.matchAll(/; import_id: (\S+)/g)].map((m) => m[1]);
+    expect(importIds).toHaveLength(2);
+
+    const mockTxns = importIds.map((id, i) => ({
+      ttags: [["import_id", id]],
+      tdate: "2025-01-15",
+      tdescription: `tx${i}`,
+      tpostings: [{ paccount: ACCOUNT, pamount: [] }],
+    }));
+    vi.mocked(spawnText).mockImplementation(async (cmd: string[]) => {
+      if (cmd[1] === "print") return makeMockProc(0, JSON.stringify(mockTxns));
+      if (cmd[1] === "accounts") return makeMockProc(0, DECLARED_ACCOUNTS);
+      return makeMockProc(0);
+    });
+
+    const second = await runImport({ file_path: "files/statement.ofx", account: ACCOUNT, ...BUCKETS });
+    expect(second.imported).toBe(0);
+    expect(second.skipped).toBe(2);
   });
 });
 
