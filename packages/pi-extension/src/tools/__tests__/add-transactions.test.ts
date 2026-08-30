@@ -62,6 +62,14 @@ const basicTx = {
   ],
 };
 
+// ── execution mode ──────────────────────────────────────────────────
+
+test("add_transactions runs sequentially so ledger writes never interleave", () => {
+  // Serialization relies on this instead of an in-code lock: pi runs any batch
+  // containing a "sequential" tool one call at a time.
+  expect(addTransactionsTool.executionMode).toBe("sequential");
+});
+
 // ── single transaction (backward compatibility) ─────────────────────
 
 test("formats basic transaction correctly", async () => {
