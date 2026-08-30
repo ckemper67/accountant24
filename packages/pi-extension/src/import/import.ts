@@ -25,19 +25,31 @@ import { loadExistingImportIds, reconcile } from "./dedup";
 import { decodeBuffer } from "./encoding";
 import type { NumberFormat } from "./numbers";
 import { detectNumberFormat, parseLocaleAmount } from "./numbers";
+import { looksLikeOfx, parseOfx } from "./ofx";
 
 // ── Types ────────────────────────────────────────────────────────────
 
+/** File format for runImport. "auto" (the default) detects from the file extension. */
+export type ImportFileFormat = "csv" | "ofx";
+
 export interface ImportParams {
-  /** Workspace-relative path to the CSV statement file. */
+  /** Workspace-relative path to the statement file (CSV or OFX/QFX/QBO). */
   file_path: string;
   /** Ledger account this statement belongs to, e.g. "Assets:Bank:Checking". */
   account: string;
+  /**
+   * File format; omit to detect from the file extension (.csv/.tsv -> csv, .ofx/.qfx/.qbo ->
+   * ofx -- QFX and QBO are the same OFX SGML format under different filename conventions
+   * used by Quicken and QuickBooks Web Connect respectively). If detection fails, or the
+   * content doesn't match the chosen/detected format, the tool errors with a preview of the
+   * file so you can inspect it and retry explicitly.
+   */
+  format?: ImportFileFormat;
   /** Statement currency (used when the CSV has no currency column). */
   currency?: string;
-  /** Explicit number format override; omit to auto-detect. */
+  /** Explicit number format override; omit to auto-detect. Ignored for OFX (always "us"). */
   number_format?: NumberFormat;
-  /** Explicit date format override: "MDY" | "DMY". */
+  /** Explicit date format override: "MDY" | "DMY". Ignored for OFX (dates are unambiguous). */
   date_format?: "MDY" | "DMY";
   /** Column name overrides. CSV only. */
   column_map?: ColumnMap;
@@ -127,7 +139,8 @@ interface CoreParams {
 const MAX_SAMPLE = 5;
 
 /** The fields ImportParams and RowImportParams share verbatim, threaded into CoreParams
- *  at each front-end's call site (each also sets its own `encoding`). */
+ *  at each front-end's call site (each also sets its own `encoding` and format-specific
+ *  fields, e.g. the OFX branch forces `number_format: "us"`). */
 type SharedFields = Pick<
   CoreParams,
   | "account"
@@ -233,18 +246,30 @@ function emptyResult(encoding: string, dryRun: boolean, detection?: ImportDetect
   };
 }
 
-/** Build a "look at the file and check its format" error, with a content preview. */
+// ── Format detection ────────────────────────────────────────────────
+
+/** Detect the file format from its extension; undefined if not recognized. */
+function detectFormatFromExtension(filePath: string): ImportFileFormat | undefined {
+  const ext = filePath.toLowerCase().split(".").pop();
+  // .qfx (Quicken) and .qbo (QuickBooks Web Connect) are the same OFX SGML format under a
+  // different filename convention -- both route to the same parser as .ofx.
+  if (ext === "ofx" || ext === "qfx" || ext === "qbo") return "ofx";
+  if (ext === "csv" || ext === "tsv") return "csv";
+  return undefined;
+}
+
+/** Build a "look at the file and retry with an explicit format" error, with a content preview. */
 function formatError(filePath: string, reason: string, text: string): Error {
   const preview = text.split(/\r?\n/).slice(0, 5).join("\n");
   return new Error(
     `${reason} for "${filePath}".\nFirst 5 lines:\n${preview}\n\n` +
-      `Read the file to check that it is a delimited CSV, then retry.`,
+      `Read the file to check its actual format, then retry with format: "csv" or format: "ofx".`,
   );
 }
 
 // ── Front-ends ───────────────────────────────────────────────────────
 
-/** Import a CSV file from the workspace. */
+/** Import a CSV or OFX file from the workspace. */
 export async function runImport(params: ImportParams, signal?: AbortSignal): Promise<ImportResult> {
   // Resolve and read the file.
   const filePath = resolveWorkspacePath(params.file_path);
@@ -256,6 +281,36 @@ export async function runImport(params: ImportParams, signal?: AbortSignal): Pro
   }
 
   const { text, encoding } = decodeBuffer(fileBuffer);
+  const format = params.format ?? detectFormatFromExtension(params.file_path);
+  if (!format) {
+    throw formatError(params.file_path, "Cannot determine the format", text);
+  }
+
+  if (format === "ofx") {
+    if (!looksLikeOfx(text)) {
+      throw formatError(params.file_path, "File does not look like OFX (no OFXHEADER/<OFX> found)", text);
+    }
+    const { rows, accountCount } = parseOfx(text);
+    if (accountCount > 1) {
+      throw new Error(
+        `"${params.file_path}" contains ${accountCount} account blocks; this importer only supports one ` +
+          `account per OFX file. Split the file or import each account separately.`,
+      );
+    }
+
+    return importStatementRows(
+      rows,
+      {
+        ...sharedFields(params),
+        // OFX amounts are always '.'-decimal per spec -- skip locale auto-detect, which
+        // could otherwise misread e.g. "1.234" as European thousands-grouping.
+        number_format: "us",
+        encoding,
+      },
+      signal,
+      rows.map((r) => r.fitid),
+    );
+  }
 
   let rows: StatementRow[];
   let headers: string[];
@@ -310,6 +365,7 @@ async function importStatementRows(
   rows: StatementRow[],
   core: CoreParams,
   signal?: AbortSignal,
+  fitids?: Array<string | undefined>,
 ): Promise<ImportResult> {
   if (rows.length === 0) {
     return emptyResult(core.encoding, core.dry_run ?? false, core.detection);
@@ -402,6 +458,11 @@ async function importStatementRows(
     const tags: AddTransactionParams["tags"] = [{ name: "import_id", value: importId }];
     if (row.payee) tags.push({ name: "original_payee_name", value: row.payee });
     if (row.description) tags.push({ name: "original_description", value: row.description });
+    // The bank-assigned FITID, when the source has one (OFX): kept only for provenance --
+    // it is never used for dedup (see dedup.ts), since a trustworthy incoming id says
+    // nothing about whether the matching *existing* ledger entry was ever tagged.
+    const fitid = fitids?.[i];
+    if (fitid) tags.push({ name: "fitid", value: fitid });
 
     toImport.push({
       date: dedupRow.date,
