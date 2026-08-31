@@ -14,6 +14,7 @@ import gitignore from "./template/.gitignore?raw";
 import accountsJournal from "./template/ledger/accounts.journal?raw";
 import commoditiesJournal from "./template/ledger/commodities.journal?raw";
 import mainJournal from "./template/ledger/main.journal?raw";
+import pricesJournal from "./template/ledger/prices.journal?raw";
 import memoryMd from "./template/memory.md?raw";
 
 /** Workspace scaffold manifest. Relative paths → file contents. */
@@ -22,6 +23,7 @@ const TEMPLATE_FILES: Record<string, string> = {
   ".gitignore": gitignore,
   "ledger/accounts.journal": accountsJournal,
   "ledger/commodities.journal": commoditiesJournal,
+  "ledger/prices.journal": pricesJournal,
   "ledger/main.journal": mainJournal,
 };
 
