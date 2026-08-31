@@ -13,6 +13,7 @@ import {
   importExtractedTransactionsTool,
   importTransactionsTool,
   queryTool,
+  traceTransactionTool,
   validateTool,
 } from "./tools";
 
@@ -33,6 +34,7 @@ export function createAccountantExtension(pi: ExtensionAPI): void {
   pi.registerTool(commitAndPushTool);
   pi.registerTool(extractTextTool);
   pi.registerTool(fetchPricesTool);
+  pi.registerTool(traceTransactionTool);
   pi.registerTool(validateTool);
 
   // memory.md has no dedicated tool — the agent maintains it with pi's built-in

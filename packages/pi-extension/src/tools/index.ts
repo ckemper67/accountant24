@@ -8,4 +8,5 @@ export { fetchPricesTool } from "./fetch-prices";
 export { importExtractedTransactionsTool } from "./import-extracted-transactions";
 export { importTransactionsTool } from "./import-transactions";
 export { queryTool } from "./query";
+export { traceTransactionTool } from "./trace-transaction";
 export { validateTool } from "./validate";
