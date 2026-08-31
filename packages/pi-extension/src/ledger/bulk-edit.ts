@@ -7,19 +7,25 @@ import { resolveSafePath } from "./paths";
 // ── Types ───────────────────────────────────────────────────────────
 
 /** The transaction/posting fields that are safe to change by surgical text replacement. */
-export type BulkEditField = "account" | "payee" | "status";
+export type BulkEditField = "account" | "payee" | "status" | "tag_set" | "tag_remove";
 
 export interface BulkEditParams {
   field: BulkEditField;
-  /** The replacement value: a new account (field "account"), a new payee (field "payee"),
-   * or a status name — "cleared" | "pending" | "unmarked" (field "status"). */
+  /** The replacement value: a new account (field "account"), a new payee (field "payee"), a
+   * status name — "cleared" | "pending" | "unmarked" (field "status"), or a tag's value
+   * (field "tag_set"; "" for a value-less tag). Ignored for field "tag_remove". */
   new_value: string;
   /** Required for field "account": selects which posting to change, by its current account. */
   from_account?: string;
   /** Required for field "payee": the exact current payee to rename, so a fuzzy query never
    * silently rewrites a different, unrelated payee. */
   from_payee?: string;
+  /** Required for field "tag_set" and "tag_remove": the tag name to set or remove. */
+  tag_name?: string;
 }
+
+/** Per-transaction result of a "tag_set"/"tag_remove" edit. */
+export type TagOutcome = "added" | "overwritten" | "removed" | "unchanged" | "skipped";
 
 export interface BulkEditResult {
   field: BulkEditField;
@@ -31,6 +37,9 @@ export interface BulkEditResult {
   ledgerIsValid: boolean;
   validationError?: string;
   dryRun: boolean;
+  /** Only set for field "tag_set"/"tag_remove": a per-outcome breakdown so an overwrite is
+   * never silent (see docs/proposals/bulk-edit-tags.md). */
+  tagOutcomes?: Record<TagOutcome, number>;
 }
 
 // hledger separates a posting's account from its amount with 2+ spaces or a tab.
@@ -54,9 +63,11 @@ type BulkEditStatus = keyof typeof STATUS_MARKERS;
 /**
  * Run an hledger query and change one field on every matching transaction.
  * Supported fields (safe surgical text replacements):
- *   - account: move postings in `from_account` to `new_value` (a new account).
- *   - payee:   replace each transaction's payee with `new_value`.
- *   - status:  set the header status marker to `new_value` (cleared/pending/unmarked).
+ *   - account:    move postings in `from_account` to `new_value` (a new account).
+ *   - payee:      replace each transaction's payee with `new_value`.
+ *   - status:     set the header status marker to `new_value` (cleared/pending/unmarked).
+ *   - tag_set:    ensure `tag_name` is present with value `new_value` ("" for value-less).
+ *   - tag_remove: delete `tag_name` where present.
  *
  * `query` is an array of hledger query terms. Each element is passed verbatim as one
  * argv token to `hledger` (via spawn, never a shell), so a term containing spaces such
@@ -83,18 +94,38 @@ export async function bulkEditTransactions(
 
   const matches = await discover(query, params, mainPath, signal);
 
-  // Edit each file from its last matched transaction upward. Every edit here is
-  // line-count-preserving, so this ordering is not strictly required today; it guards
-  // against a future edit type that inserts or removes lines, where editing top-down
-  // would invalidate the `startLine` of every later match in the same file.
+  // Edit each file from its last matched transaction upward. Account/payee/status edits are
+  // line-count-preserving, so this ordering is not strictly required for them; it matters for
+  // tag_set/tag_remove, which can insert or delete a line — editing top-down there would
+  // invalidate the `startLine` of every later match in the same file.
   const ordered = [...matches].sort((a, b) => b.startLine - a.startLine);
 
   const warnings: string[] = [];
   let transactions = 0;
   let postings = 0;
+  const isTagField = params.field === "tag_set" || params.field === "tag_remove";
+  const tagOutcomes: Record<TagOutcome, number> = { added: 0, overwritten: 0, removed: 0, unchanged: 0, skipped: 0 };
 
   for (const match of ordered) {
     const content = session.read(match.file);
+
+    if (isTagField) {
+      const { newContent, outcome, warn } = applyTagEdit(
+        content,
+        match,
+        params.field === "tag_set",
+        params.tag_name as string,
+        params.new_value,
+      );
+      warnings.push(...warn);
+      tagOutcomes[outcome] += 1;
+      if (outcome === "added" || outcome === "overwritten" || outcome === "removed") {
+        session.write(match.file, newContent);
+        transactions += 1;
+      }
+      continue;
+    }
+
     const { newContent, count, warn } =
       params.field === "account"
         ? applyAccountEdit(content, match, params.from_account as string, params.new_value)
@@ -134,6 +165,7 @@ export async function bulkEditTransactions(
     postings,
     diffs: session.diff(),
     warnings,
+    ...(isTagField ? { tagOutcomes } : {}),
   };
 
   if (dryRun) {
@@ -166,14 +198,26 @@ function validate(query: string[], params: BulkEditParams): void {
       throw new Error(`Invalid query term "${term}": query terms must not start with '-'.`);
     }
   }
-  if (params.field !== "account" && params.field !== "payee" && params.field !== "status") {
-    throw new Error(`Unsupported field: ${params.field}. Expected "account", "payee", or "status".`);
+  if (
+    params.field !== "account" &&
+    params.field !== "payee" &&
+    params.field !== "status" &&
+    params.field !== "tag_set" &&
+    params.field !== "tag_remove"
+  ) {
+    throw new Error(
+      `Unsupported field: ${params.field}. Expected "account", "payee", "status", "tag_set", or "tag_remove".`,
+    );
   }
-  if (!params.new_value || params.new_value.trim() === "") {
-    throw new Error("new_value must not be empty.");
-  }
-  if (params.new_value !== params.new_value.trim()) {
-    throw new Error("new_value must not have leading or trailing whitespace.");
+  // tag_remove never reads new_value; tag_set allows "" (a value-less tag) where every
+  // other field requires a non-empty value.
+  if (params.field !== "tag_remove") {
+    if (params.field !== "tag_set" && (!params.new_value || params.new_value.trim() === "")) {
+      throw new Error("new_value must not be empty.");
+    }
+    if (params.new_value !== params.new_value.trim()) {
+      throw new Error("new_value must not have leading or trailing whitespace.");
+    }
   }
   if (params.field === "account") {
     if (!params.from_account || params.from_account.trim() === "") {
@@ -198,6 +242,26 @@ function validate(query: string[], params: BulkEditParams): void {
   if (params.field === "status" && !(params.new_value in STATUS_MARKERS)) {
     throw new Error('new_value (status) must be "cleared", "pending", or "unmarked".');
   }
+  if (params.field === "tag_set" || params.field === "tag_remove") {
+    if (!params.tag_name || params.tag_name.trim() === "") {
+      throw new Error(`tag_name is required when field is "${params.field}".`);
+    }
+    if (params.tag_name !== params.tag_name.trim()) {
+      throw new Error("tag_name must not have leading or trailing whitespace.");
+    }
+    // A comma or colon in the name would be read by hledger as a tag/value boundary, and
+    // this tool's own locator regex needs an unambiguous name to match against.
+    if (/[,:\s]/.test(params.tag_name)) {
+      throw new Error("tag_name must not contain ',', ':', or whitespace.");
+    }
+  }
+  if (params.field === "tag_set") {
+    // A comma would be read as a second tag by hledger; a newline would break the
+    // comment-line model entirely.
+    if (/[,\n]/.test(params.new_value)) {
+      throw new Error("new_value (tag) must not contain ',' or a newline.");
+    }
+  }
 }
 
 // ── Discovery ───────────────────────────────────────────────────────
@@ -205,6 +269,9 @@ function validate(query: string[], params: BulkEditParams): void {
 interface Match {
   file: string; // absolute path to the journal file the transaction lives in
   startLine: number; // 1-based line of the transaction's first (header) line
+  /** Only populated for tag_set/tag_remove: hledger's own [name, value] pairs for this
+   * transaction, the authoritative source for whether a tag is present and its value. */
+  ttags?: Array<[string, string]>;
 }
 
 async function discover(
@@ -242,9 +309,23 @@ async function discover(
     const absFile = resolveSourceFile(loc.sourceName);
     if (!absFile) continue;
 
-    matches.push({ file: absFile, startLine: loc.sourceLine });
+    const match: Match = { file: absFile, startLine: loc.sourceLine };
+    if (params.field === "tag_set" || params.field === "tag_remove") {
+      match.ttags = parseTtags(tx?.ttags);
+    }
+    matches.push(match);
   }
   return matches;
+}
+
+/** hledger's per-transaction `ttags` JSON field: an array of [name, value] pairs. */
+function parseTtags(ttags: unknown): Array<[string, string]> {
+  if (!Array.isArray(ttags)) return [];
+  const out: Array<[string, string]> = [];
+  for (const t of ttags) {
+    if (Array.isArray(t) && typeof t[0] === "string" && typeof t[1] === "string") out.push([t[0], t[1]]);
+  }
+  return out;
 }
 
 function parseSourcePos(tsourcepos: unknown): { sourceName: string; sourceLine: number } | null {
@@ -444,4 +525,135 @@ function applyStatusEdit(content: string, match: Match, newStatus: BulkEditStatu
   }
   lines[headerIdx] = header;
   return { newContent: lines.join(eol), count: 1, warn };
+}
+
+// ── Tag editing ─────────────────────────────────────────────────────
+//
+// See docs/proposals/bulk-edit-tags.md for the full design and its rationale. In short:
+// `ttags` (hledger's own parse) is the source of truth for whether a tag is present and
+// what its value is; raw text is only used to locate a dedicated `; name: value` comment
+// line to edit. Any other shape (comma-separated, fused into the header's own comment, an
+// `apply tag` directive, ...) is left alone with a warning rather than risked -- this tool
+// only edits the one shape it (and add_transactions) ever writes itself.
+
+interface TagApplyResult {
+  newContent: string;
+  outcome: TagOutcome;
+  warn: string[];
+}
+
+/** A dedicated tag comment line: `; name: value` (or `; name:` for a value-less tag).
+ * `[^,]*` also excludes a comma-separated line from matching -- such a line is a shape
+ * this function deliberately does not edit. */
+function tagLineRegExp(tagName: string): RegExp {
+  const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\s*;\\s*${escaped}\\s*:\\s*([^,]*)$`);
+}
+
+/** Render a tag as its dedicated comment line; "" renders a value-less tag. */
+function formatTagLine(indent: string, tagName: string, value: string): string {
+  return value === "" ? `${indent}; ${tagName}:` : `${indent}; ${tagName}: ${value}`;
+}
+
+/** Index just past the last pre-posting comment line (where a new tag line belongs), or
+ * `startLine` if the transaction has none. Comment lines share the posting-block boundary
+ * rules (a blank or non-indented line ends the transaction) plus stop at the first posting. */
+function commentBlockEnd(lines: string[], startLine: number): number {
+  let idx = startLine;
+  while (idx < lines.length) {
+    const line = lines[idx];
+    if (line.trim() === "") break;
+    if (!/^\s/.test(line)) break;
+    if (!line.replace(/^\s+/, "").startsWith(";")) break; // a posting line ends the comment block
+    idx += 1;
+  }
+  return idx;
+}
+
+/** Indentation for a newly inserted tag line: match the transaction's first indented line
+ * (a comment or its first posting), falling back to four spaces (`add_transactions`' own
+ * convention) only when there is none to infer from. */
+function inferIndent(lines: string[], startLine: number): string {
+  const line = lines[startLine];
+  if (line !== undefined && /^\s/.test(line)) return line.match(/^\s*/)?.[0] ?? "    ";
+  return "    ";
+}
+
+/**
+ * Set or remove one tag on one matched transaction. `ttags` (already fetched by
+ * `discover()`) decides whether the tag is present and what its current value is; the
+ * raw-text scan below only locates *where* to write the edit, and is deliberately
+ * conservative -- any shape it can't confidently confirm against `ttags` is left
+ * untouched with a warning (see the module-header comment above).
+ */
+function applyTagEdit(
+  content: string,
+  match: Match,
+  isSet: boolean,
+  tagName: string,
+  newValue: string,
+): TagApplyResult {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  const warn: string[] = [];
+  const ttags = match.ttags ?? [];
+
+  const occurrences = ttags.filter(([name]) => name === tagName);
+  if (occurrences.length > 1) {
+    warn.push(
+      `Skipped a matched transaction at ${match.file}:${match.startLine} — tag "${tagName}" appears more than once; which one to edit is ambiguous.`,
+    );
+    return { newContent: content, outcome: "skipped", warn };
+  }
+  const present = occurrences.length === 1;
+  const currentValue = present ? occurrences[0][1] : undefined;
+
+  if (!isSet && !present) {
+    return { newContent: content, outcome: "unchanged", warn }; // remove_tag: already absent
+  }
+
+  // Locate the dedicated comment line, if any, within the pre-posting comment range.
+  const re = tagLineRegExp(tagName);
+  let foundIdx = -1;
+  let foundValue: string | null = null;
+  for (let idx = match.startLine; idx < lines.length; idx++) {
+    const line = lines[idx];
+    if (line.trim() === "") break;
+    if (!/^\s/.test(line)) break;
+    if (!line.replace(/^\s+/, "").startsWith(";")) break; // a posting line ends the comment block
+    const m = line.match(re);
+    if (m) {
+      foundIdx = idx;
+      foundValue = m[1].trim();
+      break;
+    }
+  }
+
+  if (present && (foundIdx === -1 || foundValue !== currentValue)) {
+    // ttags says the tag exists, but its text couldn't be confirmed on a dedicated line
+    // (a comma-separated line, a header-fused comment, an `apply tag` directive, ...).
+    warn.push(
+      `Skipped a matched transaction at ${match.file}:${match.startLine} — tag "${tagName}" exists but its text could not be safely located to edit.`,
+    );
+    return { newContent: content, outcome: "skipped", warn };
+  }
+
+  if (!isSet) {
+    lines.splice(foundIdx, 1); // remove_tag, present and located
+    return { newContent: lines.join(eol), outcome: "removed", warn };
+  }
+
+  if (present) {
+    if (currentValue === newValue) {
+      return { newContent: content, outcome: "unchanged", warn };
+    }
+    const indent = lines[foundIdx].match(/^\s*/)?.[0] ?? "    ";
+    lines[foundIdx] = formatTagLine(indent, tagName, newValue);
+    return { newContent: lines.join(eol), outcome: "overwritten", warn };
+  }
+
+  const insertIdx = commentBlockEnd(lines, match.startLine);
+  const indent = inferIndent(lines, match.startLine);
+  lines.splice(insertIdx, 0, formatTagLine(indent, tagName, newValue));
+  return { newContent: lines.join(eol), outcome: "added", warn };
 }
