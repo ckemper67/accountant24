@@ -15,6 +15,7 @@ import { workspaceDir } from "./env";
 import { registerFilesIpc } from "./files";
 import { registerLedgerIpc } from "./ledger";
 import { registerAuthIpc } from "./llm-providers/auth";
+import { registerLiteLLMIpc } from "./llm-providers/litellm";
 import { registerOauthIpc } from "./llm-providers/oauth";
 import { registerOllamaIpc } from "./llm-providers/ollama";
 import { runPendingMigrations } from "./migrations";
@@ -102,6 +103,7 @@ app.whenReady().then(async () => {
   registerAuthIpc();
   registerOauthIpc(getWin);
   registerOllamaIpc();
+  registerLiteLLMIpc();
   registerSessionsIpc();
   registerPluginsIpc(getWin);
   registerMarketplaceIpc();
