@@ -9,6 +9,8 @@ import {
   bulkEditTransactionsTool,
   commitAndPushTool,
   extractTextTool,
+  importExtractedTransactionsTool,
+  importTransactionsTool,
   queryTool,
   validateTool,
 } from "./tools";
@@ -25,6 +27,8 @@ export function createAccountantExtension(pi: ExtensionAPI): void {
   pi.registerTool(addPricesTool);
   pi.registerTool(addTransactionsTool);
   pi.registerTool(bulkEditTransactionsTool);
+  pi.registerTool(importTransactionsTool);
+  pi.registerTool(importExtractedTransactionsTool);
   pi.registerTool(commitAndPushTool);
   pi.registerTool(extractTextTool);
   pi.registerTool(validateTool);
