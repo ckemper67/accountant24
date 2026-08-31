@@ -3,9 +3,9 @@ import { spawnText } from "../../spawn";
 
 vi.mock("../../spawn");
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const BASE = mkdtempSync(join(tmpdir(), "accountant24-query-"));
 vi.mock("../../config.js", () => ({
@@ -25,6 +25,7 @@ function makeMockProc(exitCode: number, stdout = "", stderr = "") {
 let mockProc: ReturnType<typeof makeMockProc>;
 
 const { queryTool } = await import("../query.js");
+const { MAX_INLINE_CHARS, PREVIEW_CHARS, sweepStaleScratch } = await import("../../ledger/query.js");
 
 afterAll(() => rmSync(BASE, { recursive: true, force: true }));
 beforeEach(() => {
@@ -230,5 +231,132 @@ describe("arg-building", () => {
     expect(args).toContain("--invert");
     expect(args).toContain("-O");
     expect(args).toContain("csv");
+  });
+});
+
+// ── large-output spillover ──────────────────────────────────────────
+
+/** A string of exactly `chars` characters with a line break every 10. */
+function blob(chars: number): string {
+  return "012345678\n".repeat(Math.ceil(chars / 10)).slice(0, chars);
+}
+
+/** The preview portion of a spilled result (everything before the trailer). */
+function previewOf(text: string): string {
+  return text.split("\n\n[")[0];
+}
+
+describe("large-output spillover", () => {
+  // One scratch dir for the whole process; remove it once, after the block.
+  let spilledDir: string | undefined;
+  afterAll(() => {
+    if (spilledDir) rmSync(spilledDir, { recursive: true, force: true });
+  });
+  const spill = async (params: any, signal?: AbortSignal) => {
+    const result = await (queryTool.execute("t", params, signal, undefined, undefined as any) as Promise<any>);
+    if (result.details.outputFile) spilledDir = dirname(result.details.outputFile);
+    return result;
+  };
+
+  test("returns output inline at exactly the size limit", async () => {
+    mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS));
+    const result = await spill({ report: "reg" });
+    expect(result.details.outputFile).toBeUndefined();
+    expect(result.content[0].text).toBe(blob(MAX_INLINE_CHARS));
+  });
+
+  test("spills to a scratch file one character over the limit", async () => {
+    const raw = blob(MAX_INLINE_CHARS + 1);
+    mockProc = makeMockProc(0, raw);
+    const result = await spill({ report: "reg" });
+    expect(result.details.outputFile).toBeDefined();
+    expect(existsSync(result.details.outputFile)).toBe(true);
+    expect(readFileSync(result.details.outputFile, "utf-8")).toBe(raw);
+  });
+
+  test("returns a head preview plus the path, not the full output", async () => {
+    const raw = blob(MAX_INLINE_CHARS * 4);
+    mockProc = makeMockProc(0, raw);
+    const result = await spill({ report: "reg" });
+    const text = result.content[0].text as string;
+    expect(text).toContain(result.details.outputFile);
+    expect(text).toContain("Preview only");
+    expect(text.length).toBeLessThan(raw.length);
+    // the preview is a real prefix of the output, trimmed to a line break
+    const preview = previewOf(text);
+    expect(preview.length).toBeLessThanOrEqual(PREVIEW_CHARS);
+    expect(raw.startsWith(preview)).toBe(true);
+  });
+
+  test("writes the scratch file in the OS tmpdir, not the workspace", async () => {
+    mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS * 2));
+    const result = await spill({ report: "reg" });
+    expect(result.details.outputFile).toContain(tmpdir());
+    expect(result.details.outputFile).not.toContain(BASE);
+  });
+
+  test("names the scratch file with the output_format extension", async () => {
+    mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS * 2));
+    expect((await spill({ report: "reg", output_format: "tsv" })).details.outputFile).toMatch(/\.tsv$/);
+    expect((await spill({ report: "reg", output_format: "json" })).details.outputFile).toMatch(/\.json$/);
+  });
+
+  test("defaults the scratch file extension to txt with no output_format", async () => {
+    mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS * 2));
+    expect((await spill({ report: "reg" })).details.outputFile).toMatch(/\.txt$/);
+  });
+
+  test("still returns the real hledger command in details when spilled", async () => {
+    mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS * 2));
+    const result = await spill({ report: "bal", account_pattern: "Expenses" });
+    expect(result.details.command).toContain("hledger bal");
+    expect(result.details.command).toContain("Expenses");
+  });
+
+  test("falls back to an inline preview when the scratch write fails", async () => {
+    // hledger (mocked spawn) still succeeds; an already-aborted signal makes
+    // writeFile reject, exercising the catch without failing the whole query.
+    mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS * 3));
+    const result = await spill({ report: "reg" }, AbortSignal.abort());
+    expect(result.details.outputFile).toBeUndefined();
+    const text = result.content[0].text as string;
+    expect(text).toContain("Scratch file unavailable");
+    expect(text.length).toBeLessThan((MAX_INLINE_CHARS * 3) as number);
+    expect(blob(MAX_INLINE_CHARS * 3).startsWith(previewOf(text))).toBe(true);
+  });
+});
+
+describe("sweepStaleScratch", () => {
+  test("removes scratch dirs older than the ttl, keeps fresh and unrelated ones", () => {
+    const base = mkdtempSync(join(tmpdir(), "sweep-test-"));
+    try {
+      const stale = mkdtempSync(join(base, "accountant24-query-scratch-"));
+      const fresh = mkdtempSync(join(base, "accountant24-query-scratch-"));
+      const unrelated = mkdtempSync(join(base, "something-else-"));
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(stale, past, past);
+
+      sweepStaleScratch(base, 1_000); // ttl 1s: stale (60s old) goes, fresh stays
+
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(unrelated)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("skips an entry that cannot be stat'd (vanished or broken symlink)", () => {
+    const base = mkdtempSync(join(tmpdir(), "sweep-test-"));
+    try {
+      symlinkSync(join(base, "nonexistent-target"), join(base, "accountant24-query-scratch-broken"));
+      expect(() => sweepStaleScratch(base, 0)).not.toThrow();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("does nothing when the base directory does not exist", () => {
+    expect(() => sweepStaleScratch(join(tmpdir(), "sweep-no-such-dir-xyz"), 0)).not.toThrow();
   });
 });

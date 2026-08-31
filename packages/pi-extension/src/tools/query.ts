@@ -82,6 +82,7 @@ export const queryTool: ToolDefinition<typeof Params, QueryLedgerResult> = {
       "then set valuation='market' with value_commodity set to the base currency to see current market value " +
       "(needs P price directives from add_prices/fetch_prices). Set valuation='cost' instead to see original " +
       "purchase cost basis; compare the two to see unrealized gain/loss.",
+    "A large result returns a head preview plus a scratch-file path holding the full output - read that file with bash or a script rather than re-running the query.",
   ],
   parameters: Params,
 
