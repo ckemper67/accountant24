@@ -317,6 +317,12 @@ describe("diag.recordRendererReport()", () => {
     expect(report).toContain("used 1500.0MiB / total 1800.0MiB / limit 4096.0MiB");
   });
 
+  it("should default missing heap fields to zero", () => {
+    diag.recordRendererReport({ kind: "heap" });
+    const report = captureReport("render-process-gone");
+    expect(report).toContain("used 0.0MiB / total 0.0MiB / limit 0.0MiB");
+  });
+
   it("should route an error report into the uncaught-errors list", () => {
     diag.recordRendererReport({ kind: "unhandledrejection", message: "promise blew up" });
     expect(captureReport("render-process-gone")).toContain("[unhandledrejection] promise blew up");

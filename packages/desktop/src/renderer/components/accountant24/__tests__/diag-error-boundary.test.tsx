@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/react";
+import type { ErrorInfo } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DiagErrorBoundary } from "../diag-error-boundary";
 
@@ -51,5 +52,14 @@ describe("DiagErrorBoundary", () => {
     expect(payload.stack).toContain("Error: kaboom");
 
     consoleError.mockRestore();
+  });
+
+  it("should omit componentStack when React does not supply one", () => {
+    const boundary = new DiagErrorBoundary({ children: null });
+    boundary.componentDidCatch(new Error("kaboom"), {} as ErrorInfo);
+    expect(invoke).toHaveBeenCalledWith(
+      "diag_renderer_report",
+      expect.objectContaining({ kind: "react-boundary", message: "kaboom", componentStack: undefined }),
+    );
   });
 });

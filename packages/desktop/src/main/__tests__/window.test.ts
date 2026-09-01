@@ -342,6 +342,12 @@ describe("createWindow()", () => {
       expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer console.warning"))).toBe(true);
     });
 
+    it("should default missing level/source/line on the object signature", () => {
+      h.on.get("console-message")?.({ message: "just a message" });
+      // No level -> neither error nor warning -> nothing logged for it.
+      expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer console."))).toBe(false);
+    });
+
     it("should ignore renderer console info", () => {
       h.on.get("console-message")?.(null, 0, "just chatter", 1, "x");
       expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer console."))).toBe(false);
