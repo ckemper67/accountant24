@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { type BrowserWindow, ipcMain, type UtilityProcess, utilityProcess } from "electron";
 import type { AgentHostNotice, AgentHostRequest } from "../../shared/agentHost";
 import { trackAgentFailed } from "../analytics";
+import { diag } from "../diag";
 import { agentEnv, agentHostConfig, agentHostEntryPath, sessionsDir, workspaceDir } from "../env";
 import { agentSkills } from "./plugins";
 import { resolveSessionPath } from "./session-paths";
@@ -66,6 +67,7 @@ function trackRunSignals(sessionPath: string, line: string): void {
   }
   if (event.type === "agent_start") {
     runningSessions.add(sessionPath);
+    diag.resetRunBytes(sessionPath);
     return;
   }
   // A retried run keeps going after its agent_end; a failed prompt preflight
@@ -132,7 +134,20 @@ function ensureHost(getWin: () => BrowserWindow | null): HostHandle {
 
   const emit = (channel: string, payload: unknown) => {
     const win = getWin();
-    if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+    if (!win || win.isDestroyed()) return;
+    const wc = win.webContents;
+    // The BrowserWindow can outlive its render frame (crash / reload /
+    // navigation): win.isDestroyed() stays false while a send silently fails.
+    if (wc.isDestroyed?.() || wc.isCrashed?.()) {
+      diag.noteFailedSend(new Error("webContents crashed or destroyed"));
+      return;
+    }
+    try {
+      wc.send(channel, payload);
+      diag.noteSuccessfulSend();
+    } catch (err) {
+      diag.noteFailedSend(err);
+    }
   };
 
   // stdout carries only console logs (the protocol runs over postMessage) —
@@ -151,6 +166,7 @@ function ensureHost(getWin: () => BrowserWindow | null): HostHandle {
     switch (message.kind) {
       case "event":
         trackRunSignals(message.sessionPath, message.line);
+        diag.recordForward(message.sessionPath, Buffer.byteLength(message.line, "utf8"));
         emit("agent-event", { sessionPath: message.sessionPath, line: message.line });
         return;
       case "session_error":
@@ -247,6 +263,8 @@ export function recycleAgentsWhenIdle(): void {
 
 /** Register agent IPC. */
 export function registerAgentIpc(getWin: () => BrowserWindow | null): void {
+  // Let a renderer crash report name what was streaming when the frame died.
+  diag.setRunningSessionsProvider(() => [...runningSessions]);
   ipcMain.handle("agent_send", (_e, payload: unknown) => {
     const { sessionPath, command } = (payload ?? {}) as { sessionPath?: unknown; command?: unknown };
     const target = assertSessionPath(sessionPath);

@@ -236,6 +236,35 @@ describe("host notices", () => {
     send(A);
     expect(() => notice({ kind: "event", sessionPath: A, line: "{}" })).not.toThrow();
   });
+
+  it("should skip the send without throwing when the render frame has crashed", async () => {
+    // The BrowserWindow can outlive its render frame (crash / reload):
+    // isDestroyed() stays false while the frame underneath is gone.
+    const crashedSend = vi.fn();
+    const crashedWin = { isDestroyed: () => false, webContents: { send: crashedSend, isCrashed: () => true } };
+    await setup(() => crashedWin);
+    send(A);
+    expect(() => notice({ kind: "event", sessionPath: A, line: "{}" })).not.toThrow();
+    expect(crashedSend).not.toHaveBeenCalled();
+  });
+
+  it("should not throw when webContents.send itself throws", async () => {
+    const throwingSend = vi.fn(() => {
+      throw new Error("frame disposed");
+    });
+    await setup(() => ({ isDestroyed: () => false, webContents: { send: throwingSend } }));
+    send(A);
+    expect(() => notice({ kind: "event", sessionPath: A, line: "{}" })).not.toThrow();
+    expect(throwingSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("should surface the host's stdout as console logs", async () => {
+    await setup();
+    send(A);
+    const logSpy = vi.spyOn(console, "log");
+    proc().stdout.emit("data", "hello from the host\n");
+    expect(logSpy).toHaveBeenCalledWith("[agent-host] hello from the host");
+  });
 });
 
 describe("crash reporting", () => {
