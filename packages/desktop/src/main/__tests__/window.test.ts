@@ -75,7 +75,7 @@ class FakeBrowserWindow {
 vi.mock("electron", () => ({
   BrowserWindow: FakeBrowserWindow,
   shell: { openExternal: h.openExternal },
-  app: { getPath: () => h.userDataDir },
+  app: { getPath: () => h.userDataDir, isPackaged: false },
   screen: {
     getCursorScreenPoint: () => ({ x: 0, y: 0 }),
     getDisplayNearestPoint: () => ({ workArea: h.workArea }),
@@ -249,6 +249,126 @@ describe("createWindow()", () => {
       h.on.get("will-navigate")?.(event, "file:///etc/passwd");
       expect(event.preventDefault).toHaveBeenCalled();
       expect(h.openExternal).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("renderer diagnostics wiring", () => {
+    let errs: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(async () => {
+      errs = vi.spyOn(console, "error").mockImplementation(() => {});
+      process.env.ELECTRON_RENDERER_URL = "http://localhost:5173/";
+      await createWindow();
+    });
+
+    afterEach(() => {
+      errs.mockRestore();
+    });
+
+    /** The single crash-report blob printed to console.error, or "". */
+    const reportText = () =>
+      String(
+        errs.mock.calls
+          .map((c: unknown[]) => c[0])
+          .find((a: unknown) => String(a).includes("[diag] renderer/crash report")) ?? "",
+      );
+
+    it("should print a crash report naming the reason when the render process goes", () => {
+      h.on.get("render-process-gone")?.(null, { reason: "oom", exitCode: 5 });
+      const report = reportText();
+      expect(report).toContain("trigger         render-process-gone");
+      expect(report).toContain("reason          oom");
+    });
+
+    it("should report and log an unresponsive renderer, then note recovery", () => {
+      h.on.get("unresponsive")?.();
+      expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer unresponsive"))).toBe(true);
+      expect(reportText()).toContain("trigger         unresponsive");
+      h.on.get("responsive")?.();
+      expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer responsive again"))).toBe(true);
+    });
+
+    it("should record navigations and surface them in a later crash report timeline", () => {
+      h.on.get("did-start-navigation")?.({ url: "app://index/#/chat" });
+      h.on.get("did-finish-load")?.();
+      h.on.get("render-process-gone")?.(null, { reason: "crashed" });
+      const report = reportText();
+      expect(report).toContain("did-start-navigation");
+      expect(report).toContain("app://index/#/chat");
+      expect(report).toContain("did-finish-load");
+    });
+
+    it("should NOT raise a crash report for an aborted load (errorCode -3)", () => {
+      h.on.get("did-fail-load")?.(null, -3, "ERR_ABORTED", "app://index/", true);
+      expect(reportText()).toBe("");
+    });
+
+    it("should raise a crash report for a real main-frame load failure", () => {
+      h.on.get("did-fail-load")?.(null, -105, "ERR_NAME_NOT_RESOLVED", "app://index/", true);
+      expect(reportText()).toContain("trigger         did-fail-load");
+      expect(reportText()).toContain("ERR_NAME_NOT_RESOLVED");
+    });
+
+    it("should forward a preload error to the diagnostics log", () => {
+      h.on.get("preload-error")?.(null, "/app/preload/index.mjs", new Error("bad import"));
+      expect(
+        errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("preload error in /app/preload/index.mjs")),
+      ).toBe(true);
+    });
+
+    it("should stringify a non-Error preload-error value", () => {
+      h.on.get("preload-error")?.(null, "/app/preload/index.mjs", "not an Error instance");
+      h.on.get("render-process-gone")?.(null, { reason: "crashed" });
+      expect(reportText()).toContain("preload-error: not an Error instance");
+    });
+
+    it("should surface renderer console errors (legacy positional signature)", () => {
+      h.on.get("console-message")?.(null, 3, "ReferenceError: x is not defined", 12, "app://index/bundle.js");
+      expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer console.error"))).toBe(true);
+    });
+
+    it("should surface renderer console warnings (legacy positional signature)", () => {
+      h.on.get("console-message")?.(null, 2, "deprecated call", 3, "app://index/bundle.js");
+      expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer console.warning"))).toBe(true);
+    });
+
+    it("should surface renderer console warnings (object signature)", () => {
+      h.on.get("console-message")?.({
+        level: "warning",
+        message: "deprecated API",
+        sourceId: "app://index/bundle.js",
+        lineNumber: 5,
+      });
+      expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer console.warning"))).toBe(true);
+    });
+
+    it("should ignore renderer console info", () => {
+      h.on.get("console-message")?.(null, 0, "just chatter", 1, "x");
+      expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("renderer console."))).toBe(false);
+    });
+
+    it("should log rather than crash the window when a handler body throws", () => {
+      // A details object whose `reason` getter throws simulates a handler
+      // failing partway through -- the window must survive it.
+      const poison = {
+        get reason() {
+          throw new Error("boom");
+        },
+      };
+      expect(() => h.on.get("render-process-gone")?.(null, poison)).not.toThrow();
+      expect(errs.mock.calls.some((c: unknown[]) => String(c[0]).includes("[diag] handler threw"))).toBe(true);
+    });
+
+    it("should read the navigation URL from the legacy positional argument", () => {
+      h.on.get("did-start-navigation")?.(null, "app://index/#/legacy");
+      h.on.get("render-process-gone")?.(null, { reason: "crashed" });
+      expect(reportText()).toContain("app://index/#/legacy");
+    });
+
+    it("should fall back to the current URL when did-start-navigation carries neither form", () => {
+      h.on.get("did-start-navigation")?.();
+      h.on.get("render-process-gone")?.(null, { reason: "crashed" });
+      expect(reportText()).toContain("did-start-navigation");
     });
   });
 
