@@ -2,7 +2,7 @@
 // auth/sessions, all exposed to the renderer over IPC. Replaces src-tauri.
 
 import { join } from "node:path";
-import { app, BrowserWindow, dialog, ipcMain, nativeImage } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeImage } from "electron";
 import { registerMarketplaceIpc } from "./agent/marketplace";
 import { registerPluginsIpc } from "./agent/plugins";
 import { installDefaultPlugins } from "./agent/plugins-defaults";
@@ -11,6 +11,7 @@ import { killAllAgents, registerAgentIpc } from "./agent/router";
 import { registerSessionsIpc } from "./agent/sessions";
 import { initAnalytics, registerAnalyticsIpc, trackLaunch, trackQuit } from "./analytics";
 import { applyWorkspaceFlag } from "./cli";
+import { diag } from "./diag";
 import { workspaceDir } from "./env";
 import { registerFilesIpc } from "./files";
 import { registerLedgerIpc } from "./ledger";
@@ -31,6 +32,28 @@ import { ensureWorkspace, registerWorkspaceIpc } from "./workspace";
 if (!app.isPackaged && !app.commandLine.hasSwitch("remote-debugging-port")) {
   app.commandLine.appendSwitch("remote-debugging-port", "9223");
 }
+
+// Write native minidumps for renderer / GPU crashes to <userData>/Crashpad;
+// never uploaded. Backstop for the "went blank" reports (see diag.ts) when the
+// failure is a native crash rather than a JS error. Must run before app ready.
+crashReporter.start({ uploadToServer: false, compress: true });
+
+// GPU / utility (agent host) process deaths -- a GPU crash blanks the window
+// with no render-process-gone. app-level so it is armed before any window.
+app.on("child-process-gone", (_e, details) => {
+  const d = details as { type?: string; reason?: string; exitCode?: number; serviceName?: string; name?: string };
+  if (d.type === "GPU") diag.noteGpuCrash();
+  const terminal = d.type === "GPU" || d.type === "Utility";
+  if (terminal) {
+    diag.report("child-process-gone", {
+      reason: d.reason,
+      exitCode: d.exitCode,
+      detail: { type: d.type, serviceName: d.serviceName, name: d.name },
+    });
+  } else {
+    console.error(`[diag] child-process-gone type=${d.type} reason=${d.reason} exitCode=${d.exitCode}`);
+  }
+});
 
 /** Refuse to start: a native error box (safe before `ready`, modal) and a
  *  non-zero exit. Used when continuing could open or create the wrong
@@ -99,6 +122,11 @@ app.whenReady().then(async () => {
   // Version comes from the packaged app metadata (CI injects the release
   // version via extraMetadata), so it can't be read at renderer build time.
   ipcMain.handle("app_version", () => app.getVersion());
+  // Renderer-side diagnostics: uncaught errors, unhandled rejections, React
+  // error-boundary catches, and periodic JS-heap samples (see renderer/lib/diag).
+  ipcMain.handle("diag_renderer_report", (_e, payload: unknown) => {
+    diag.recordRendererReport(payload);
+  });
   registerAgentIpc(getWin);
   registerAuthIpc();
   registerOauthIpc(getWin);
@@ -128,6 +156,29 @@ app.whenReady().then(async () => {
   // Auto-update (packaged stable builds only; no-op in dev and rc). Surfaces a
   // "Update available" banner in the sidebar once a build is staged.
   initAutoUpdater(getWin);
+
+  // Arm the crash instrumentation before the first window loads: identify this
+  // session in the log, start per-process memory sampling, and record the GPU
+  // feature status (a disabled/software GPU pipeline is itself a blank-screen
+  // cause). See diag.ts / window.ts / renderer/lib/diag.ts.
+  let gpuFeatureStatus: Record<string, string> | undefined;
+  try {
+    gpuFeatureStatus = app.getGPUFeatureStatus() as unknown as Record<string, string>;
+  } catch {
+    gpuFeatureStatus = undefined;
+  }
+  diag.setStatics({
+    appVersion: app.getVersion(),
+    crashDumpsDir: app.getPath("crashDumps"),
+    userDataDir: app.getPath("userData"),
+    gpuFeatureStatus,
+  });
+  diag.armMetricsSampler(() => app.getAppMetrics());
+  console.log(
+    `[diag] armed -- electron ${process.versions.electron} / chrome ${process.versions.chrome} / ` +
+      `app ${app.getVersion()}; userData=${app.getPath("userData")}; crashDumps=${app.getPath("crashDumps")}; ` +
+      `gpu=${JSON.stringify(gpuFeatureStatus ?? {})}`,
+  );
 
   mainWindow = createWindow();
   mainWindow.on("closed", () => {
