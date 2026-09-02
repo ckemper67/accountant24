@@ -40,6 +40,9 @@ interface PendingRequest {
   commandName: string;
   succeed: (data: unknown) => void;
   fail: (error: Error) => void;
+  /** Restart the timeout — called on each chunk of a chunked response so a
+   *  multi-frame transfer is not killed by the flat request timeout. */
+  touch: () => void;
 }
 
 class AgentBridge {
@@ -48,6 +51,11 @@ class AgentBridge {
   private readonly errorListeners = new Set<ErrorListener>();
   /** In-flight request() promises keyed by their correlation id. */
   private readonly pending = new Map<string, PendingRequest>();
+  /** Partial reassembly buffers for chunked responses, keyed by the same
+   *  correlation id. An entry lives only between the first non-final chunk and
+   *  the final one; request() cleanup drops it on resolve/reject/timeout/crash
+   *  so an abandoned transfer cannot leak the transcript. */
+  private readonly chunks = new Map<string, { messages: unknown[]; nextSeq: number }>();
   /** Holds pi's transient context-overflow error until the stream shows
    *  whether auto-compaction recovered (then it is dropped) or not (then it is
    *  replayed) — every listener sees the corrected stream. */
@@ -84,10 +92,16 @@ class AgentBridge {
       // Settled here, in the one wired listener, so an in-flight request adds
       // no extra IPC listener (each would re-parse every session's stream).
       const p = e.id ? this.pending.get(e.id) : undefined;
-      if (p) {
-        if (e.success) p.succeed(e.data);
-        else p.fail(new Error(e.error ?? `${p.commandName} failed`));
+      if (!p) return;
+      if (!e.success) {
+        p.fail(new Error(e.error ?? `${p.commandName} failed`));
+        return;
       }
+      if (e.chunk) {
+        this.accumulateChunk(e.id as string, e.chunk, e.data, p);
+        return;
+      }
+      p.succeed(e.data);
       return;
     }
     if (e.type === "extension_ui_request") {
@@ -103,6 +117,27 @@ class AgentBridge {
 
   private fanOut(e: SessionAgentEvent): void {
     for (const fn of [...this.listeners]) fn(e);
+  }
+
+  /** Reassemble a chunked response frame by frame. Frames arrive in order over
+   *  an ordered transport; an out-of-order `seq` means a lost frame, so the
+   *  request fails loudly rather than resolving a torn transcript. The final
+   *  frame resolves the request with the concatenated payload. */
+  private accumulateChunk(id: string, chunk: { seq: number; final: boolean }, data: unknown, p: PendingRequest): void {
+    const acc = this.chunks.get(id) ?? { messages: [], nextSeq: 0 };
+    if (chunk.seq !== acc.nextSeq) {
+      p.fail(new Error(`${p.commandName}: out-of-order chunk ${chunk.seq}, expected ${acc.nextSeq}`));
+      return;
+    }
+    const batch = (data as { messages?: unknown[] } | undefined)?.messages ?? [];
+    for (const m of batch) acc.messages.push(m);
+    acc.nextSeq += 1;
+    if (!chunk.final) {
+      this.chunks.set(id, acc);
+      p.touch();
+      return;
+    }
+    p.succeed({ messages: acc.messages });
   }
 
   /** The session's last known compaction state (undefined until one starts).
@@ -143,10 +178,14 @@ class AgentBridge {
     const requestId = crypto.randomUUID();
     return new Promise<T>((resolve, reject) => {
       let settled = false;
-      const timer = setTimeout(() => fail(new Error(`${commandName} timed out`)), REQUEST_TIMEOUT_MS);
+      let timer: ReturnType<typeof setTimeout>;
+      const arm = () => {
+        timer = setTimeout(() => fail(new Error(`${commandName} timed out`)), REQUEST_TIMEOUT_MS);
+      };
       const cleanup = () => {
         clearTimeout(timer);
         this.pending.delete(requestId);
+        this.chunks.delete(requestId);
       };
       const succeed = (data: unknown) => {
         if (settled) return;
@@ -160,8 +199,15 @@ class AgentBridge {
         cleanup();
         reject(error);
       };
+      // Slide the timeout forward on every chunk so a long multi-frame transfer
+      // stays alive as long as frames keep arriving.
+      const touch = () => {
+        clearTimeout(timer);
+        arm();
+      };
 
-      this.pending.set(requestId, { sessionPath, commandName, succeed, fail });
+      arm();
+      this.pending.set(requestId, { sessionPath, commandName, succeed, fail, touch });
       agentApi.send(sessionPath, { ...command, id: requestId }).catch(fail);
     });
   }
