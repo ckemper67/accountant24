@@ -129,8 +129,9 @@ export const chainLabel = (active: boolean, durationMs: number | null, count: nu
  * calls as a single ordered, collapsible unit (instead of separate per-type
  * collapsibles). Children are the timeline steps, in message order.
  *
- * Open state follows the run: expanded while the agent is working, collapsed
- * once done — unless the user has toggled it (then their choice sticks).
+ * Collapsed by default — the trigger shows live status (shimmer + spinner)
+ * while the agent works and a summary once done; the reasoning/tool timeline
+ * only shows when the user opens it, and their choice then sticks.
  */
 export function ChainOfThoughtRoot({
   count,
@@ -140,10 +141,11 @@ export function ChainOfThoughtRoot({
 }: PropsWithChildren<{ count: number; startIndex: number; endIndex: number }>) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
 
-  // "Still thinking" = the run is active AND nothing has streamed past this chain
+  // "Still working" = the run is active AND nothing has streamed past this chain
   // yet (no answer text after it). This stays true through every reasoning/tool
-  // step and flips once — when the answer begins or the run ends — so the box
-  // doesn't flicker open/closed between steps.
+  // step and flips once — when the answer begins or the run ends. It drives the
+  // trigger's live affordances (spinner, shimmer, label) only; the box stays
+  // collapsed regardless until the user opens it.
   const active = useAuiState((s) => {
     if (s.message.status?.type !== "running") return false;
     return s.message.parts.length - 1 <= endIndex;
@@ -166,7 +168,10 @@ export function ChainOfThoughtRoot({
   return (
     <Disclosure
       data-slot="aui_chain-of-thought"
-      open={userOpen ?? active}
+      // Collapsed by default, even mid-run: thinking traces are long and rarely
+      // needed in the main view. `active` still drives the trigger's live
+      // status; only a user toggle opens the timeline.
+      open={userOpen ?? false}
       onOpenChange={setUserOpen}
       // chat-rhythm mirrors the markdown block rhythm, so the chain sits with
       // the same gap whether it precedes or follows answer text; first:mt-0 /
