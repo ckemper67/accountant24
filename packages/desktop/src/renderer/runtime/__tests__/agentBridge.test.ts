@@ -234,6 +234,182 @@ describe("agentBridge", () => {
     });
   });
 
+  describe("chunked responses", () => {
+    /** Emit one frame of a chunked response to the pending get_messages request. */
+    const chunkOf = (messages: unknown[], seq: number, final: boolean) =>
+      emit({
+        type: "response",
+        id: sentId("get_messages"),
+        command: "get_messages",
+        success: true,
+        data: { messages },
+        chunk: { seq, final },
+      });
+
+    it("should reassemble frames in order and resolve with the concatenated payload on the final frame", async () => {
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+
+      chunkOf([{ i: 0 }, { i: 1 }], 0, false);
+      chunkOf([{ i: 2 }], 1, false);
+      chunkOf([{ i: 3 }, { i: 4 }], 2, true);
+
+      await expect(p).resolves.toEqual({ messages: [{ i: 0 }, { i: 1 }, { i: 2 }, { i: 3 }, { i: 4 }] });
+    });
+
+    it("should resolve immediately when the only frame is seq 0 and final", async () => {
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+
+      chunkOf([{ only: true }], 0, true);
+      await expect(p).resolves.toEqual({ messages: [{ only: true }] });
+    });
+
+    it("should resolve with an empty list when the only frame carries no messages", async () => {
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+
+      chunkOf([], 0, true);
+      await expect(p).resolves.toEqual({ messages: [] });
+    });
+
+    it("should treat a frame with no data payload as an empty slice", async () => {
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+
+      emit({
+        type: "response",
+        id: sentId("get_messages"),
+        command: "get_messages",
+        success: true,
+        chunk: { seq: 0, final: false },
+      });
+      emit({
+        type: "response",
+        id: sentId("get_messages"),
+        command: "get_messages",
+        success: true,
+        data: { messages: [{ i: 1 }] },
+        chunk: { seq: 1, final: true },
+      });
+      await expect(p).resolves.toEqual({ messages: [{ i: 1 }] });
+    });
+
+    it("should reject when a frame arrives out of sequence (a lost frame)", async () => {
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+
+      chunkOf([{ i: 0 }], 0, false);
+      chunkOf([{ i: 2 }], 2, true); // seq 1 never arrived
+      await expect(p).rejects.toThrow(/out-of-order chunk 2, expected 1/);
+    });
+
+    it("should keep the transfer alive as long as frames keep arriving past the base timeout", async () => {
+      vi.useFakeTimers();
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await vi.advanceTimersByTimeAsync(0);
+
+      chunkOf([{ i: 0 }], 0, false);
+      await vi.advanceTimersByTimeAsync(25_000);
+      chunkOf([{ i: 1 }], 1, false);
+      await vi.advanceTimersByTimeAsync(25_000);
+      chunkOf([{ i: 2 }], 2, true);
+
+      await expect(p).resolves.toEqual({ messages: [{ i: 0 }, { i: 1 }, { i: 2 }] });
+    });
+
+    it("should reject when no further frame arrives within the timeout after a partial transfer", async () => {
+      vi.useFakeTimers();
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      p.catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+
+      chunkOf([{ i: 0 }], 0, false);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(p).rejects.toThrow(/get_messages timed out/);
+    });
+
+    it("should drop a partial buffer when the session crashes mid-transfer, so a fresh request reassembles cleanly", async () => {
+      const bridge = await loadBridge();
+      const p1 = bridge.request(A, { type: "get_messages" }, "get_messages");
+      p1.catch(() => {});
+      await flush();
+
+      chunkOf([{ stale: 0 }], 0, false);
+      emitTerminated({ sessionPath: A, code: 1, signal: null, stderr: "" });
+      await expect(p1).rejects.toThrow();
+
+      // A new request reuses the same command name; its first frame must start a
+      // clean buffer, not append to the abandoned one.
+      h.sent.length = 0;
+      const p2 = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+      chunkOf([{ fresh: 1 }], 0, true);
+      await expect(p2).resolves.toEqual({ messages: [{ fresh: 1 }] });
+    });
+
+    it("should reject mid-transfer when a frame reports failure", async () => {
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+
+      chunkOf([{ i: 0 }], 0, false);
+      emit({ type: "response", id: sentId("get_messages"), command: "get_messages", success: false, error: "gone" });
+      await expect(p).rejects.toThrow("gone");
+    });
+
+    it("should treat a frame whose data is not an object as an empty slice", async () => {
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+      const id = sentId("get_messages");
+
+      emit({ type: "response", id, command: "get_messages", success: true, data: 42, chunk: { seq: 0, final: false } });
+      emit({
+        type: "response",
+        id,
+        command: "get_messages",
+        success: true,
+        data: { messages: [{ i: 1 }] },
+        chunk: { seq: 1, final: true },
+      });
+      await expect(p).resolves.toEqual({ messages: [{ i: 1 }] });
+    });
+
+    it("should keep two concurrent chunked transfers separate when their frames interleave", async () => {
+      const bridge = await loadBridge();
+      const pA = bridge.request(A, { type: "get_messages" }, "get_messages");
+      const pB = bridge.request(B, { type: "get_messages" }, "get_messages");
+      await flush();
+      const idA = (h.sent.find((c) => c.sessionPath === A)?.command as { id?: string }).id;
+      const idB = (h.sent.find((c) => c.sessionPath === B)?.command as { id?: string }).id;
+      const frame = (id: string | undefined, messages: unknown[], seq: number, final: boolean) =>
+        emit({
+          type: "response",
+          id,
+          command: "get_messages",
+          success: true,
+          data: { messages },
+          chunk: { seq, final },
+        });
+
+      frame(idA, [{ a: 0 }], 0, false);
+      frame(idB, [{ b: 0 }, { b: 1 }], 0, false);
+      frame(idA, [{ a: 1 }], 1, true);
+      frame(idB, [{ b: 2 }], 1, true);
+
+      await expect(pA).resolves.toEqual({ messages: [{ a: 0 }, { a: 1 }] });
+      await expect(pB).resolves.toEqual({ messages: [{ b: 0 }, { b: 1 }, { b: 2 }] });
+    });
+  });
+
   describe("request() failure paths", () => {
     it("should reject an in-flight request when its session's child crashes", async () => {
       const bridge = await loadBridge();

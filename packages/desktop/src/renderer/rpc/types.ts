@@ -188,7 +188,18 @@ export type AgentEvent =
       options?: string[];
       placeholder?: string;
     }
-  | { type: "response"; id?: string; command: string; success: boolean; data?: unknown; error?: string };
+  | {
+      type: "response";
+      id?: string;
+      command: string;
+      success: boolean;
+      data?: unknown;
+      error?: string;
+      /** Present only on a chunked response (today: `get_messages`). Each frame
+       *  carries a slice of `data`; the renderer reassembles across frames and
+       *  resolves the request on the frame with `final: true`. */
+      chunk?: { seq: number; final: boolean };
+    };
 
 /** An agent event tagged with the session it came from. The pi wire event is
  *  anonymous; main tags each line with its child's session path so the
