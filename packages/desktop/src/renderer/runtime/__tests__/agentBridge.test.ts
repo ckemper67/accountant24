@@ -364,6 +364,50 @@ describe("agentBridge", () => {
       emit({ type: "response", id: sentId("get_messages"), command: "get_messages", success: false, error: "gone" });
       await expect(p).rejects.toThrow("gone");
     });
+
+    it("should treat a frame whose data is not an object as an empty slice", async () => {
+      const bridge = await loadBridge();
+      const p = bridge.request(A, { type: "get_messages" }, "get_messages");
+      await flush();
+      const id = sentId("get_messages");
+
+      emit({ type: "response", id, command: "get_messages", success: true, data: 42, chunk: { seq: 0, final: false } });
+      emit({
+        type: "response",
+        id,
+        command: "get_messages",
+        success: true,
+        data: { messages: [{ i: 1 }] },
+        chunk: { seq: 1, final: true },
+      });
+      await expect(p).resolves.toEqual({ messages: [{ i: 1 }] });
+    });
+
+    it("should keep two concurrent chunked transfers separate when their frames interleave", async () => {
+      const bridge = await loadBridge();
+      const pA = bridge.request(A, { type: "get_messages" }, "get_messages");
+      const pB = bridge.request(B, { type: "get_messages" }, "get_messages");
+      await flush();
+      const idA = (h.sent.find((c) => c.sessionPath === A)?.command as { id?: string }).id;
+      const idB = (h.sent.find((c) => c.sessionPath === B)?.command as { id?: string }).id;
+      const frame = (id: string | undefined, messages: unknown[], seq: number, final: boolean) =>
+        emit({
+          type: "response",
+          id,
+          command: "get_messages",
+          success: true,
+          data: { messages },
+          chunk: { seq, final },
+        });
+
+      frame(idA, [{ a: 0 }], 0, false);
+      frame(idB, [{ b: 0 }, { b: 1 }], 0, false);
+      frame(idA, [{ a: 1 }], 1, true);
+      frame(idB, [{ b: 2 }], 1, true);
+
+      await expect(pA).resolves.toEqual({ messages: [{ a: 0 }, { a: 1 }] });
+      await expect(pB).resolves.toEqual({ messages: [{ b: 0 }, { b: 1 }, { b: 2 }] });
+    });
   });
 
   describe("request() failure paths", () => {

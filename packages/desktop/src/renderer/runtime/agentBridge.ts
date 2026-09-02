@@ -91,14 +91,15 @@ class AgentBridge {
     if (e.type === "response") {
       // Settled here, in the one wired listener, so an in-flight request adds
       // no extra IPC listener (each would re-parse every session's stream).
-      const p = e.id ? this.pending.get(e.id) : undefined;
-      if (!p) return;
+      const id = e.id;
+      const p = id ? this.pending.get(id) : undefined;
+      if (!p || !id) return;
       if (!e.success) {
         p.fail(new Error(e.error ?? `${p.commandName} failed`));
         return;
       }
       if (e.chunk) {
-        this.accumulateChunk(e.id as string, e.chunk, e.data, p);
+        this.accumulateChunk(id, e.chunk, e.data, p);
         return;
       }
       p.succeed(e.data);

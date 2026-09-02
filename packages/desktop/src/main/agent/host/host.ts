@@ -85,17 +85,32 @@ export interface MessagesChunk {
   final: boolean;
 }
 
+/** Best-effort serialized UTF-8 size of one message, for the chunk budget only.
+ *  `JSON.stringify` yields `undefined` for an `undefined` array element (it
+ *  serializes as `null`, 4 bytes) and throws on a value it cannot represent
+ *  (circular ref, BigInt) — such a message is charged the whole budget so it
+ *  lands alone in its own frame. Authoritative serialization happens later in
+ *  `postEvent`; a failure there is turned into an error response by
+ *  `handleCommand`'s catch. */
+function messageByteLength(msg: unknown, byteCap: number): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(msg) ?? "null", "utf8");
+  } catch {
+    return byteCap;
+  }
+}
+
 /** Split a transcript into byte-bounded frames. Accumulates messages until the
  *  running serialized size would cross `byteCap`, then cuts; a message that is
  *  itself over the cap gets its own frame. Always returns at least one frame
  *  (an empty transcript yields a single empty `final` frame), and only the
- *  last frame has `final: true`. */
+ *  last frame has `final: true`. Total function — never throws. */
 export function chunkMessages(messages: readonly unknown[], byteCap: number): MessagesChunk[] {
   const frames: MessagesChunk[] = [];
   let batch: unknown[] = [];
   let batchBytes = 0;
   for (const msg of messages) {
-    const msgBytes = Buffer.byteLength(JSON.stringify(msg) ?? "null", "utf8");
+    const msgBytes = messageByteLength(msg, byteCap);
     if (batch.length > 0 && batchBytes + msgBytes > byteCap) {
       frames.push({ messages: batch, seq: frames.length, final: false });
       batch = [];

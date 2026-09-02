@@ -702,9 +702,20 @@ describe("chunkMessages()", () => {
     expect(frames.at(-1)?.final).toBe(true);
   });
 
-  it("should size a non-serializable message as 'null' rather than throwing", () => {
+  it("should size an `undefined` element as 'null' rather than throwing", () => {
     const frames = chunkMessages([undefined, { ok: 1 }], 1024);
     expect(frames).toEqual([{ messages: [undefined, { ok: 1 }], seq: 0, final: true }]);
+  });
+
+  it("should not throw on a message that cannot be serialized, charging it the full budget", () => {
+    const circular: Record<string, unknown> = { role: "assistant" };
+    circular.self = circular;
+    const small = { role: "user", text: "hi" };
+    // The unserializable message is charged `byteCap`, so it forces a cut and
+    // rides its own frame instead of being batched with a neighbour.
+    const frames = chunkMessages([small, circular, small], 1024);
+    expect(frames.map((f) => f.messages)).toEqual([[small], [circular], [small]]);
+    expect(frames.map((f) => f.final)).toEqual([false, false, true]);
   });
 
   it("should expose a positive default chunk budget", () => {
