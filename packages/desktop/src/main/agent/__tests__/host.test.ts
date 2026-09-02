@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import type { AgentHostNotice } from "../../../shared/agentHost";
-import { AgentHost, type HostRuntime, type HostSession, type UiBridge } from "../host/host";
+import {
+  AgentHost,
+  chunkMessages,
+  GET_MESSAGES_CHUNK_BYTES,
+  type HostRuntime,
+  type HostSession,
+  type UiBridge,
+} from "../host/host";
 
 // AgentHost is the utilityProcess core: per-session runtimes, RPC-shaped
 // command dispatch, event serialization, and the idle reaper/LRU cap. The pi
@@ -360,7 +367,7 @@ describe("commands", () => {
     });
   });
 
-  it("should return the messages on get_messages", async () => {
+  it("should return the messages as a single final chunk on get_messages for a short transcript", async () => {
     fakes.get(A)?.session.messages.push({ role: "user", content: "hi" });
     command(A, { type: "get_messages", id: "1" });
     await flush();
@@ -371,8 +378,46 @@ describe("commands", () => {
         command: "get_messages",
         success: true,
         data: { messages: [{ role: "user", content: "hi" }] },
+        chunk: { seq: 0, final: true },
       },
     ]);
+  });
+
+  it("should return one empty final chunk on get_messages for an empty transcript", async () => {
+    command(A, { type: "get_messages", id: "1" });
+    await flush();
+    expect(responses(A)).toEqual([
+      {
+        id: "1",
+        type: "response",
+        command: "get_messages",
+        success: true,
+        data: { messages: [] },
+        chunk: { seq: 0, final: true },
+      },
+    ]);
+  });
+
+  it("should split a large transcript into multiple byte-bounded chunks on get_messages", async () => {
+    // Each message ~2 KB serialized; 200 of them (~400 KB) must not ride one frame.
+    const big = Array.from({ length: 200 }, (_, i) => ({ role: "assistant", content: `${i}:${"x".repeat(2000)}` }));
+    const fake = fakes.get(A);
+    if (fake) fake.session.messages.push(...big);
+    command(A, { type: "get_messages", id: "1" });
+    await flush();
+
+    const frames = responses(A);
+    expect(frames.length).toBeGreaterThan(1);
+    // Sequential seq, only the last is final.
+    expect(frames.map((f) => (f.chunk as { seq: number }).seq)).toEqual(frames.map((_, i) => i));
+    expect(frames.map((f) => (f.chunk as { final: boolean }).final)).toEqual(
+      frames.map((_, i) => i === frames.length - 1),
+    );
+    // Every frame stays within a small multiple of the 96 KB budget.
+    for (const f of frames) expect(Buffer.byteLength(JSON.stringify(f), "utf8")).toBeLessThan(150 * 1024);
+    // Reassembling the frames reproduces the transcript in order.
+    const rejoined = frames.flatMap((f) => (f.data as { messages: unknown[] }).messages);
+    expect(rejoined).toEqual(big);
   });
 
   it("should respond an error for an unknown command type", async () => {
@@ -606,5 +651,63 @@ describe("session cap", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(factory).toHaveBeenCalledTimes(9);
     for (const dispose of disposes.values()) expect(dispose).not.toHaveBeenCalled();
+  });
+});
+
+describe("chunkMessages()", () => {
+  const bytesOf = (v: unknown) => Buffer.byteLength(JSON.stringify(v), "utf8");
+
+  it("should return one empty final frame when there are no messages", () => {
+    expect(chunkMessages([], 1024)).toEqual([{ messages: [], seq: 0, final: true }]);
+  });
+
+  it("should return a single final frame when the whole transcript fits the budget", () => {
+    const msgs = [{ a: 1 }, { b: 2 }, { c: 3 }];
+    expect(chunkMessages(msgs, 1024)).toEqual([{ messages: msgs, seq: 0, final: true }]);
+  });
+
+  it("should cut a new frame when adding the next message would cross the budget", () => {
+    // Each message serializes to well over 100 bytes; budget 250 fits two per frame.
+    const msg = { text: "x".repeat(100) };
+    const frames = chunkMessages([msg, msg, msg, msg, msg], 250);
+    expect(frames.map((f) => f.messages.length)).toEqual([2, 2, 1]);
+    expect(frames.map((f) => f.seq)).toEqual([0, 1, 2]);
+    expect(frames.map((f) => f.final)).toEqual([false, false, true]);
+  });
+
+  it("should keep every frame's payload within the budget except a lone oversized message", () => {
+    const small = { text: "x".repeat(50) };
+    const huge = { text: "y".repeat(5000) };
+    const frames = chunkMessages([small, small, huge, small], 200);
+    for (const f of frames) {
+      if (f.messages.length === 1 && bytesOf(f.messages[0]) > 200) continue; // documented exception
+      expect(bytesOf({ messages: f.messages })).toBeLessThanOrEqual(200 + bytesOf(small));
+    }
+    // The oversized message rides its own frame, not batched with a neighbour.
+    const hugeFrame = frames.find((f) => (f.messages[0] as { text: string })?.text?.startsWith("y"));
+    expect(hugeFrame?.messages).toEqual([huge]);
+  });
+
+  it("should preserve message order and content when frames are rejoined", () => {
+    const msgs = Array.from({ length: 50 }, (_, i) => ({ role: "assistant", i, pad: "z".repeat(300) }));
+    const frames = chunkMessages(msgs, 512);
+    expect(frames.length).toBeGreaterThan(1);
+    expect(frames.flatMap((f) => f.messages)).toEqual(msgs);
+  });
+
+  it("should mark only the last frame final for a multi-frame split", () => {
+    const msgs = Array.from({ length: 20 }, () => ({ pad: "q".repeat(400) }));
+    const frames = chunkMessages(msgs, 512);
+    expect(frames.slice(0, -1).every((f) => f.final === false)).toBe(true);
+    expect(frames.at(-1)?.final).toBe(true);
+  });
+
+  it("should size a non-serializable message as 'null' rather than throwing", () => {
+    const frames = chunkMessages([undefined, { ok: 1 }], 1024);
+    expect(frames).toEqual([{ messages: [undefined, { ok: 1 }], seq: 0, final: true }]);
+  });
+
+  it("should expose a positive default chunk budget", () => {
+    expect(GET_MESSAGES_CHUNK_BYTES).toBeGreaterThan(0);
   });
 });

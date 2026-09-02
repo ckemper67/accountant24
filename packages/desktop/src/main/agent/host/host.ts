@@ -67,6 +67,47 @@ export const IDLE_TTL_MS = 15 * 60_000;
 export const MAX_SESSIONS = 8;
 export const REAP_INTERVAL_MS = 60_000;
 
+/** Target serialized size of one `get_messages` response frame. A whole
+ *  transcript can be several MB; sending it as one IPC line forced a single
+ *  multi-MB structured-clone + JSON.parse on the renderer tick (a heap spike
+ *  that crashed the frame). Frames are cut on this soft byte budget so the
+ *  transfer spreads across event-loop turns. A single message larger than the
+ *  budget still goes out whole in its own frame — splitting within a message
+ *  is out of scope. */
+export const GET_MESSAGES_CHUNK_BYTES = 96 * 1024;
+
+/** One `get_messages` response frame: a slice of the transcript plus its
+ *  position in the sequence. `final` marks the last frame (also the only frame
+ *  for a short or empty transcript). */
+export interface MessagesChunk {
+  messages: unknown[];
+  seq: number;
+  final: boolean;
+}
+
+/** Split a transcript into byte-bounded frames. Accumulates messages until the
+ *  running serialized size would cross `byteCap`, then cuts; a message that is
+ *  itself over the cap gets its own frame. Always returns at least one frame
+ *  (an empty transcript yields a single empty `final` frame), and only the
+ *  last frame has `final: true`. */
+export function chunkMessages(messages: readonly unknown[], byteCap: number): MessagesChunk[] {
+  const frames: MessagesChunk[] = [];
+  let batch: unknown[] = [];
+  let batchBytes = 0;
+  for (const msg of messages) {
+    const msgBytes = Buffer.byteLength(JSON.stringify(msg) ?? "null", "utf8");
+    if (batch.length > 0 && batchBytes + msgBytes > byteCap) {
+      frames.push({ messages: batch, seq: frames.length, final: false });
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(msg);
+    batchBytes += msgBytes;
+  }
+  frames.push({ messages: batch, seq: frames.length, final: true });
+  return frames;
+}
+
 interface SessionEntry {
   runtime: Promise<HostRuntime>;
   /** Resolved session, once the runtime is up — used for isStreaming checks. */
@@ -331,7 +372,15 @@ export class AgentHost {
           return;
         }
         case "get_messages": {
-          this.postEvent(sessionPath, success({ messages: session.messages }));
+          // Chunked so a large transcript never crosses the IPC boundary as one
+          // multi-MB frame. Each frame is a valid response carrying a slice of
+          // the messages plus a `chunk` marker the renderer reassembles on.
+          for (const frame of chunkMessages(session.messages, GET_MESSAGES_CHUNK_BYTES)) {
+            this.postEvent(sessionPath, {
+              ...success({ messages: frame.messages }),
+              chunk: { seq: frame.seq, final: frame.final },
+            });
+          }
           return;
         }
         default: {
