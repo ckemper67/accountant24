@@ -288,6 +288,48 @@ describe("Thread assistant chain-of-thought", () => {
     expect(screen.getByText("Query Ledger")).toBeInTheDocument();
   });
 
+  it("should keep the chain collapsed while the turn is still streaming", async () => {
+    render(
+      <Chrome
+        isRunning
+        messages={[
+          {
+            id: "a1",
+            role: "assistant",
+            status: { type: "running" },
+            content: [{ type: "reasoning", text: "Deciding which report to run" }],
+          },
+        ]}
+      >
+        <Thread />
+      </Chrome>,
+    );
+    // Live status trigger is shown...
+    expect(await screen.findByText("Working")).toBeInTheDocument();
+    // ...but the reasoning text stays hidden until the user opens it.
+    expect(screen.queryByText("Deciding which report to run")).toBeNull();
+  });
+
+  it("should reveal a still-streaming chain's reasoning when the user opens it", async () => {
+    render(
+      <Chrome
+        isRunning
+        messages={[
+          {
+            id: "a1",
+            role: "assistant",
+            status: { type: "running" },
+            content: [{ type: "reasoning", text: "Deciding which report to run" }],
+          },
+        ]}
+      >
+        <Thread />
+      </Chrome>,
+    );
+    fireEvent.click(await screen.findByText("Working"));
+    expect(await screen.findByText("Deciding which report to run")).toBeInTheDocument();
+  });
+
   it("should show each cycle's own working time when a message holds two chains (A-32)", async () => {
     // Raw pi transcript: user(0.5s) → turn1 thinking+answer(1.5s) → turn2
     // thinking+tool(61.5s) → toolResult(120s) → turn4 final answer(121.5s).
