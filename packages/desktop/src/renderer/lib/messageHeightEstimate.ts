@@ -10,7 +10,7 @@
 //
 // This is a deliberately cheap heuristic (O(parts), no text scan beyond
 // `.length`), not a layout engine. Being roughly proportional is the whole
-// job; exactness is not needed.
+// job; exactness is not needed — the `auto` keyword corrects it on first paint.
 
 /** The shape this estimator reads off an assistant-ui message part. Everything
  *  is optional so an unknown part type degrades to the misc-part fallback. */
@@ -25,9 +25,16 @@ const CHARS_PER_LINE = 88;
 const LINE_PX = 26;
 /** Vertical breathing room a rendered part adds beyond its text lines. */
 const PART_SPACING_PX = 12;
-/** A tool call renders as a collapsed card / chain-of-thought step. */
-const TOOL_PART_PX = 96;
-/** A part with no readable text (image, data, indicator, unknown). */
+/** Ceiling for one text part. A genuinely huge part (a pasted CSV, a big tool
+ *  result dumped as text) would otherwise estimate tens of thousands of px and
+ *  make the first-paint scroll jump *worse* than the old flat guess; the `auto`
+ *  keyword learns the real height on first reveal regardless. */
+const MAX_TEXT_PART_PX = 4000;
+/** Reasoning and tool-call parts render inside the chain-of-thought box, which
+ *  is collapsed by default (see `chain-of-thought.tsx`) — a message with any of
+ *  them reserves just its trigger row, not the hidden timeline's height. */
+const CHAIN_TRIGGER_PX = 44;
+/** A part with no readable text and a non-text type (image, data, indicator). */
 const MISC_PART_PX = 28;
 /** Minimum for a user message: an empty bubble is still this tall. */
 const USER_FLOOR_PX = 44;
@@ -44,19 +51,24 @@ export function estimateMessageHeightPx(parts: readonly unknown[] | undefined, r
   if (!parts || parts.length === 0) return floor;
 
   let px = 0;
+  let hasChainStep = false;
   for (const raw of parts) {
     const part = (raw ?? {}) as EstimableMessagePart;
-    if (part.type === "tool-call") {
-      px += TOOL_PART_PX;
+    // Collapsed by default — near-zero visible height; one trigger row is added
+    // once below for the whole message.
+    if (part.type === "reasoning" || part.type === "tool-call") {
+      hasChainStep = true;
       continue;
     }
     const text = typeof part.text === "string" ? part.text : "";
     if (text.length === 0) {
-      px += MISC_PART_PX;
+      // An empty text part renders nothing; a non-text part (image, data) does.
+      if (part.type && part.type !== "text") px += MISC_PART_PX;
       continue;
     }
-    px += Math.ceil(text.length / CHARS_PER_LINE) * LINE_PX + PART_SPACING_PX;
+    px += Math.min(Math.ceil(text.length / CHARS_PER_LINE) * LINE_PX + PART_SPACING_PX, MAX_TEXT_PART_PX);
   }
+  if (hasChainStep) px += CHAIN_TRIGGER_PX;
   return Math.max(px, floor);
 }
 

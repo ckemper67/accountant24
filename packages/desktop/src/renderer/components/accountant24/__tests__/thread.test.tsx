@@ -217,6 +217,38 @@ describe("Thread message intrinsic-size hint", () => {
     await screen.findByText("what is my balance?");
     expect(hintPx(document.querySelector('[data-slot="aui_user-message-root"]'))).toBeGreaterThanOrEqual(44);
   });
+
+  it("should not re-estimate a running message from its content (stable hint while streaming)", async () => {
+    const running = (text: string) => ({
+      id: "a1",
+      role: "assistant" as const,
+      status: { type: "running" },
+      content: [{ type: "text", text }],
+    });
+
+    const { unmount } = render(
+      <Chrome isRunning messages={[running("SHORT_MARKER tiny")]}>
+        <Thread />
+      </Chrome>,
+    );
+    await screen.findByText(/SHORT_MARKER/);
+    const shortRun = hintPx(document.querySelector('[data-slot="aui_assistant-message-content"]'));
+    unmount();
+
+    render(
+      <Chrome isRunning messages={[running(`LONG_MARKER ${"words ".repeat(400)}`)]}>
+        <Thread />
+      </Chrome>,
+    );
+    await screen.findByText(/LONG_MARKER/);
+    const longRun = hintPx(document.querySelector('[data-slot="aui_assistant-message-content"]'));
+
+    // A running message is on-screen; its hint is a fixed 800px placeholder, not
+    // a content-derived value that would rewrite the style on every token. A
+    // revert to the plain estimate would make shortRun ~38 and longRun ~740.
+    expect(shortRun).toBe(800);
+    expect(longRun).toBe(800);
+  });
 });
 
 describe("Thread user message attachments", () => {
