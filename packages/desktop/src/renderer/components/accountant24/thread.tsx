@@ -30,12 +30,21 @@ import { Message, MessageContent, MessageGroup } from "@/components/shadcn/messa
 import { intrinsicSizeHint } from "@/lib/messageHeightEstimate";
 import { cn } from "@/lib/utils";
 
+/** A running message is the on-screen tail: `content-visibility` measures it
+ *  for real, so its `contain-intrinsic-size` is unused — this fixed value just
+ *  keeps the selector output stable so a re-estimate does not fire (and rewrite
+ *  the inline style) on every token. The real estimate takes over on completion. */
+const RUNNING_INTRINSIC_SIZE = "auto 800px";
+
 /** `contain-intrinsic-size` for the current message, derived from its own
  *  content. An off-screen `content-visibility:auto` message renders at this
  *  size until measured once; a flat guess far from the real height makes the
  *  scroll container mis-size and the scrollbar jump on the first scroll through
  *  a long transcript. The `auto` keyword keeps the real size once known. */
-const useIntrinsicSizeHint = (): string => useAuiState((s) => intrinsicSizeHint(s.message.parts, s.message.role));
+const useIntrinsicSizeHint = (): string =>
+  useAuiState((s) =>
+    s.message.status?.type === "running" ? RUNNING_INTRINSIC_SIZE : intrinsicSizeHint(s.message.parts, s.message.role),
+  );
 
 /** One reasoning timeline section as standalone markdown. The provider scopes
  *  MarkdownText to the section's slice of the part; `isRunning` keeps the
