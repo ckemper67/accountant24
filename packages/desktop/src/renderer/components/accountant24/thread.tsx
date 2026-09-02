@@ -27,7 +27,15 @@ import { TooltipIconButton } from "@/components/accountant24/tooltip-icon-button
 import { useTransactionCount } from "@/components/accountant24/use-transaction-count";
 import { Bubble, BubbleContent } from "@/components/shadcn/bubble";
 import { Message, MessageContent, MessageGroup } from "@/components/shadcn/message";
+import { intrinsicSizeHint } from "@/lib/messageHeightEstimate";
 import { cn } from "@/lib/utils";
+
+/** `contain-intrinsic-size` for the current message, derived from its own
+ *  content. An off-screen `content-visibility:auto` message renders at this
+ *  size until measured once; a flat guess far from the real height makes the
+ *  scroll container mis-size and the scrollbar jump on the first scroll through
+ *  a long transcript. The `auto` keyword keeps the real size once known. */
+const useIntrinsicSizeHint = (): string => useAuiState((s) => intrinsicSizeHint(s.message.parts, s.message.role));
 
 /** One reasoning timeline section as standalone markdown. The provider scopes
  *  MarkdownText to the section's slice of the part; `isRunning` keeps the
@@ -167,6 +175,7 @@ const ThreadWelcome: FC = () => {
 
 const AssistantMessage: FC = () => {
   const { ToolFallback: ToolFallbackComponent = ToolFallback } = useContext(ThreadComponentsContext);
+  const containIntrinsicSize = useIntrinsicSizeHint();
 
   return (
     <MessagePrimitive.Root
@@ -176,8 +185,11 @@ const AssistantMessage: FC = () => {
     >
       <div
         data-slot="aui_assistant-message-content"
-        // [contain-intrinsic-size:auto_24px] fixes issue #4104, don't change without checking for regressions
-        className="text-foreground px-2 leading-relaxed wrap-break-word [contain-intrinsic-size:auto_24px] [content-visibility:auto]"
+        // contain-intrinsic-size guards issue #4104 (off-screen collapse); the
+        // value is a content-derived estimate (see useIntrinsicSizeHint), not a
+        // flat guess. Do not drop it without checking for regressions.
+        className="text-foreground px-2 leading-relaxed wrap-break-word [content-visibility:auto]"
+        style={{ containIntrinsicSize }}
       >
         <MessagePrimitive.GroupedParts
           groupBy={groupPartByType({
@@ -259,6 +271,7 @@ const AssistantMessage: FC = () => {
 const NoPart: FC = () => null;
 
 const UserMessage: FC = () => {
+  const containIntrinsicSize = useIntrinsicSizeHint();
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
@@ -266,7 +279,10 @@ const UserMessage: FC = () => {
       // CHAT SPACING in index.css): the top anchor pins this element's box to
       // the viewport edge, so the padding keeps the bubble out of the fade
       // zone right after sending.
-      className="fade-in slide-in-from-bottom-1 animate-in px-2 pt-chat-turn duration-150 [contain-intrinsic-size:auto_60px] [content-visibility:auto]"
+      // contain-intrinsic-size guards issue #4104 (off-screen collapse); the
+      // value is a content-derived estimate (see useIntrinsicSizeHint).
+      className="fade-in slide-in-from-bottom-1 animate-in px-2 pt-chat-turn duration-150 [content-visibility:auto]"
+      style={{ containIntrinsicSize }}
       data-role="user"
     >
       <Message align="end">

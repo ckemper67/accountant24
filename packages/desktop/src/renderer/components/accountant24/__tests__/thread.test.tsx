@@ -165,6 +165,60 @@ describe("Thread welcome vs. messages", () => {
   });
 });
 
+describe("Thread message intrinsic-size hint", () => {
+  // A message off-screen under content-visibility:auto renders at its
+  // contain-intrinsic-size until measured; the hint must scale with the
+  // message's own content, not be a flat guess.
+  const hintPx = (el: Element | null): number | null => {
+    const m = /contain-intrinsic-size:\s*auto\s+(\d+)px/.exec(el?.getAttribute("style") ?? "");
+    return m ? Number(m[1]) : null;
+  };
+
+  it("should set a content-visibility intrinsic-size on the assistant message content", async () => {
+    render(
+      <Chrome messages={[assistantText("Your balance is 100.")]}>
+        <Thread />
+      </Chrome>,
+    );
+    await screen.findByText("Your balance is 100.");
+    expect(hintPx(document.querySelector('[data-slot="aui_assistant-message-content"]'))).toBeGreaterThan(0);
+  });
+
+  it("should scale the assistant intrinsic-size hint with message length", async () => {
+    const { unmount } = render(
+      <Chrome messages={[assistantText("short")]}>
+        <Thread />
+      </Chrome>,
+    );
+    await screen.findByText("short");
+    const small = hintPx(document.querySelector('[data-slot="aui_assistant-message-content"]'));
+    unmount();
+
+    const long = "words ".repeat(400);
+    render(
+      <Chrome messages={[assistantText(long)]}>
+        <Thread />
+      </Chrome>,
+    );
+    await screen.findByText(long.trim());
+    const large = hintPx(document.querySelector('[data-slot="aui_assistant-message-content"]'));
+
+    expect(small).not.toBeNull();
+    expect(large).not.toBeNull();
+    expect(large as number).toBeGreaterThan((small as number) * 5);
+  });
+
+  it("should set an intrinsic-size hint of at least the user floor on the user message root", async () => {
+    render(
+      <Chrome messages={[userMsg("what is my balance?")]}>
+        <Thread />
+      </Chrome>,
+    );
+    await screen.findByText("what is my balance?");
+    expect(hintPx(document.querySelector('[data-slot="aui_user-message-root"]'))).toBeGreaterThanOrEqual(44);
+  });
+});
+
 describe("Thread user message attachments", () => {
   const marker = encodeAttachmentRef({ name: "07 Beleg.pdf", path: "files/2026/08/20260806120000.pdf" });
   const attachmentsRow = () => document.querySelector('[data-slot="aui_user-attachments"]');
