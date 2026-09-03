@@ -313,6 +313,22 @@ describe("large-output spillover", () => {
     expect(result.details.command).toContain("Expenses");
   });
 
+  test("gives two spills in the same millisecond distinct scratch files", async () => {
+    // One host process serves every chat, so concurrent queries can spill in
+    // the same tick; a timestamp-only name would overwrite the first result.
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_756_000_000_000);
+    try {
+      mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS * 2));
+      const first = await spill({ report: "reg" });
+      const second = await spill({ report: "reg" });
+      expect(first.details.outputFile).not.toBe(second.details.outputFile);
+      expect(existsSync(first.details.outputFile)).toBe(true);
+      expect(existsSync(second.details.outputFile)).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   test("falls back to an inline preview when the scratch write fails", async () => {
     // hledger (mocked spawn) still succeeds; an already-aborted signal makes
     // writeFile reject, exercising the catch without failing the whole query.

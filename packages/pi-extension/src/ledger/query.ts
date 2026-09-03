@@ -81,6 +81,10 @@ export function sweepStaleScratch(base: string = tmpdir(), ttlMs: number = SCRAT
 // here propagates to queryLedger's catch (inline fallback) and leaves this
 // unset so the next call retries.
 let scratchDir: string | undefined;
+// Serial per process, appended to each scratch file name: one host process
+// serves every chat, so two queries can spill in the same millisecond, and a
+// timestamp alone would silently overwrite one result with the other.
+let scratchSeq = 0;
 function ensureScratchDir(): string {
   if (scratchDir === undefined) {
     sweepStaleScratch();
@@ -103,7 +107,7 @@ export async function queryLedger(params: any, signal?: AbortSignal): Promise<Qu
   const preview = headWithinBudget(raw, PREVIEW_CHARS);
   const ext = OUTPUT_EXTENSIONS[params.output_format] ?? "txt";
   try {
-    const outputFile = join(ensureScratchDir(), `query-${Date.now()}.${ext}`);
+    const outputFile = join(ensureScratchDir(), `query-${Date.now()}-${scratchSeq++}.${ext}`);
     await writeFile(outputFile, raw, { signal });
     return {
       command,
