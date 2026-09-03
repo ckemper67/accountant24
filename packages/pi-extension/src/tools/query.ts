@@ -66,7 +66,7 @@ export const queryTool: ToolDefinition<typeof Params, QueryLedgerResult> = {
   promptSnippet: "Run hledger reports (balance, register, income statement, etc.)",
   promptGuidelines: [
     `Available query report types: ${REPORT_TYPES}.`,
-    "A large result returns a head preview plus a scratch-file path holding the full output - read that file with bash or a script rather than re-running the query.",
+    "A large `query` result returns a head preview plus a scratch-file path holding the full output - read that file with bash or a script rather than re-running the query.",
   ],
   parameters: Params,
 
