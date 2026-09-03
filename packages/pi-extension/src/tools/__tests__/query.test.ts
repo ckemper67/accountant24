@@ -3,7 +3,7 @@ import { spawnText } from "../../spawn";
 
 vi.mock("../../spawn");
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -327,6 +327,28 @@ describe("large-output spillover", () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+
+  test("recreates the scratch dir when it was swept away mid-run", async () => {
+    // Another instance's TTL sweep (or a tmp cleaner) can remove this
+    // process's scratch dir while it is still running; the next spill must
+    // get a fresh dir instead of failing until restart.
+    mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS * 2));
+    const first = await spill({ report: "reg" });
+    rmSync(dirname(first.details.outputFile), { recursive: true, force: true });
+    const second = await spill({ report: "reg" });
+    expect(second.details.outputFile).toBeDefined();
+    expect(existsSync(second.details.outputFile)).toBe(true);
+  });
+
+  test("refreshes the scratch dir mtime on each spill so a live dir never looks stale", async () => {
+    mockProc = makeMockProc(0, blob(MAX_INLINE_CHARS * 2));
+    const first = await spill({ report: "reg" });
+    const dir = dirname(first.details.outputFile);
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(dir, past, past);
+    await spill({ report: "reg" });
+    expect(statSync(dir).mtimeMs).toBeGreaterThan(Date.now() - 5_000);
   });
 
   test("falls back to an inline preview when the scratch write fails", async () => {

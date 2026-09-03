@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,8 +71,13 @@ export function sweepStaleScratch(base: string = tmpdir(), ttlMs: number = SCRAT
   for (const name of names) {
     if (!name.startsWith(SCRATCH_PREFIX)) continue;
     const p = join(base, name);
-    const st = statSync(p, { throwIfNoEntry: false });
-    if (st && Date.now() - st.mtimeMs > ttlMs) rmSync(p, { recursive: true, force: true });
+    try {
+      const st = statSync(p, { throwIfNoEntry: false });
+      if (st && Date.now() - st.mtimeMs > ttlMs) rmSync(p, { recursive: true, force: true });
+    } catch {
+      // One undeletable entry (permissions, a race with another sweep) must
+      // not stop the sweep or fail the query that triggered it.
+    }
   }
 }
 
@@ -86,9 +91,24 @@ let scratchDir: string | undefined;
 // timestamp alone would silently overwrite one result with the other.
 let scratchSeq = 0;
 function ensureScratchDir(): string {
+  if (scratchDir !== undefined && !existsSync(scratchDir)) {
+    // Another instance's sweep (or a tmp cleaner) removed the dir mid-run.
+    // Recreate rather than letting every spill fail until restart.
+    scratchDir = undefined;
+  }
   if (scratchDir === undefined) {
     sweepStaleScratch();
     scratchDir = mkdtempSync(join(tmpdir(), SCRATCH_PREFIX));
+  } else {
+    // Keep a live dir looking live: the sweep judges staleness by mtime, and
+    // a long-running process can outlive the TTL between spills.
+    const now = new Date();
+    try {
+      utimesSync(scratchDir, now, now);
+    } catch {
+      // Best effort - worst case the dir looks stale and is swept, which the
+      // existsSync check above then recovers from.
+    }
   }
   return scratchDir;
 }
