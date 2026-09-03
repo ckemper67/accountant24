@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync } fr
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { ACCOUNTANT24_WORKSPACE } from "../config";
 import { runHledger } from "./hledger";
 import { resolveSafePath } from "./paths";
@@ -22,9 +23,11 @@ const TUI_CHROME_WIDTH = 6;
 // this size, spill the full output to a scratch file and return only a head
 // preview plus the path. Gate on total length, not line count: line count
 // misleads for `-O json` (one pretty-printed array) and for wide `reg` output,
-// and counting lines means scanning the whole string. ~16k chars is roughly
-// 4k tokens.
-export const MAX_INLINE_CHARS = 16_000;
+// and counting lines means scanning the whole string. The threshold is pi's
+// own tool-output cap (50 KB, what its bash/read/grep tools enforce), so the
+// model lives with one limit everywhere; report output is ASCII-dominated,
+// so chars ≈ bytes.
+export const MAX_INLINE_CHARS = DEFAULT_MAX_BYTES;
 // How much of a spilled result to still show inline, so the model (and the
 // user, who sees this text in the tool-result card) can read the shape of the
 // output and often answer without a second call. Trimmed back to a line break.
