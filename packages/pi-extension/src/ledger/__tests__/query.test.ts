@@ -101,6 +101,35 @@ describe("queryLedger()", () => {
       const result = await queryLedger({ report: "bal", invert: true });
       expect(result.command).toContain("--invert");
     });
+
+    test("should include --cost in command when valuation=cost", async () => {
+      const result = await queryLedger({ report: "bal", valuation: "cost" });
+      expect(result.command).toContain("--cost");
+    });
+
+    test("should include --market in command when valuation=market and value_commodity is unset", async () => {
+      const result = await queryLedger({ report: "bal", valuation: "market" });
+      expect(result.command).toContain("--market");
+    });
+
+    test("should include --exchange in command when valuation=market and value_commodity is set", async () => {
+      const result = await queryLedger({ report: "bal", valuation: "market", value_commodity: "EUR" });
+      expect(result.command).toContain("--exchange EUR");
+      expect(result.command).not.toContain("--market");
+    });
+
+    test("should not include --exchange when valuation=market and value_commodity is set but valuation is cost", async () => {
+      const result = await queryLedger({ report: "bal", valuation: "cost", value_commodity: "EUR" });
+      expect(result.command).not.toContain("--exchange");
+      expect(result.command).not.toContain("--market");
+    });
+
+    test("should omit valuation flags when valuation is unset", async () => {
+      const result = await queryLedger({ report: "bal" });
+      expect(result.command).not.toContain("--cost");
+      expect(result.command).not.toContain("--market");
+      expect(result.command).not.toContain("--exchange");
+    });
   });
 
   describe("error handling", () => {
