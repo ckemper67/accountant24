@@ -5,7 +5,7 @@ vi.mock("../../spawn");
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 const BASE = mkdtempSync(join(tmpdir(), "accountant24-ledger-"));
 vi.mock("../../config.js", () => ({
@@ -118,6 +118,43 @@ describe("queryLedger()", () => {
       await expect(queryLedger({ report: "bal", file: "../../etc/passwd" })).rejects.toThrow(
         "Path escapes base directory",
       );
+    });
+
+    test("should reject a `../` hop out of the ledger dir toward the workspace root", async () => {
+      // From the ledger dir, `../auth.json` lands in the workspace root where the
+      // credential files live — the confinement must reject it.
+      await expect(queryLedger({ report: "bal", file: "../auth.json" })).rejects.toThrow("Path escapes base directory");
+    });
+  });
+
+  describe("credential confinement", () => {
+    beforeEach(() => {
+      vi.mocked(spawnText).mockResolvedValue(makeMockProc(0, ""));
+    });
+
+    // Extract the journal path hledger is pointed at (the token after `-f`).
+    function journalArg(command: string): string {
+      const parts = command.split(" ");
+      return parts[parts.indexOf("-f") + 1];
+    }
+
+    test("should resolve a bare `file` inside the ledger dir, not the workspace root", async () => {
+      // auth.json / models.json sit in the workspace root, one level above the
+      // ledger dir. A prompt-injected `file: "auth.json"` must resolve to
+      // <workspace>/ledger/auth.json (harmless), never the real <workspace>/auth.json.
+      const result = await queryLedger({ report: "bal", file: "auth.json" });
+      const journal = journalArg(result.command);
+      // Must stay under the ledger dir prefix — a revert to ACCOUNTANT24_HOME as
+      // the base would resolve to <workspace>/auth.json and fail both assertions.
+      expect(journal.startsWith(join(BASE, "ledger") + sep)).toBe(true);
+      expect(journal).toBe(join(BASE, "ledger", "auth.json"));
+    });
+
+    test("should resolve the default journal inside the ledger dir", async () => {
+      const result = await queryLedger({ report: "bal" });
+      const journal = journalArg(result.command);
+      expect(journal.startsWith(join(BASE, "ledger") + sep)).toBe(true);
+      expect(journal).toBe(join(BASE, "ledger", "main.journal"));
     });
   });
 });
