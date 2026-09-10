@@ -92,4 +92,11 @@ describe("querySpec.handler()", () => {
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain("Path escapes base directory");
   });
+
+  test("should stringify a non-Error rejection into error content", async () => {
+    vi.mocked(spawnText).mockRejectedValue("spawn blew up");
+    const result = await querySpec.handler({ report: "bal" });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe("spawn blew up");
+  });
 });

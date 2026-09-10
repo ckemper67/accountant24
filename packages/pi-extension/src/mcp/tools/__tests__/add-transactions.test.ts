@@ -1,0 +1,89 @@
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { spawnText } from "../../../spawn";
+
+vi.mock("../../../spawn");
+
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const BASE = mkdtempSync(join(tmpdir(), "accountant24-mcp-addtx-"));
+const LEDGER = join(BASE, "ledger");
+vi.mock("../../../config.js", () => ({
+  ACCOUNTANT24_WORKSPACE: BASE,
+  LEDGER_DIR: LEDGER,
+  MEMORY_PATH: join(BASE, "memory.md"),
+  setBaseDir: () => {},
+}));
+
+// Real ledger/transactions.ts runs over a temp workspace; only the hledger
+// subprocess (the post-write `check`) is mocked.
+const { addTransactionsSpec } = await import("../add-transactions.js");
+
+function textOf(r: CallToolResult): string {
+  return r.content.map((c) => ("text" in c ? (c.text as string) : "")).join("");
+}
+
+const tx = {
+  date: "2026-03-15",
+  payee: "Whole Foods",
+  description: "Groceries",
+  postings: [
+    { account: "Assets:Checking", amount: -45, currency: "USD" },
+    { account: "Expenses:Food:Groceries", amount: 45, currency: "USD" },
+  ],
+};
+
+beforeEach(() => {
+  rmSync(LEDGER, { recursive: true, force: true });
+  mkdirSync(LEDGER, { recursive: true });
+  vi.mocked(spawnText).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+});
+
+afterEach(() => rmSync(BASE, { recursive: true, force: true }));
+
+describe("addTransactionsSpec", () => {
+  test("should not be marked read-only", () => {
+    expect(addTransactionsSpec.config.annotations?.readOnlyHint).toBeFalsy();
+  });
+});
+
+describe("addTransactionsSpec.handler()", () => {
+  test("should save one transaction and echo the routed path and rendered entry", async () => {
+    const result = await addTransactionsSpec.handler({ transactions: [tx] });
+    expect(result.isError).toBeFalsy();
+    const body = textOf(result);
+    expect(body).toContain(join(LEDGER, "2026", "03.journal"));
+    expect(body).toContain("2026-03-15 * Whole Foods | Groceries");
+  });
+
+  test("should summarize a multi-transaction batch as a numbered list", async () => {
+    const result = await addTransactionsSpec.handler({
+      transactions: [tx, { ...tx, date: "2026-04-01", payee: "EDEKA", description: undefined }],
+    });
+    expect(textOf(result)).toContain("2 transactions saved");
+  });
+
+  test("should report a post-write validation failure as error content, leaving the write", async () => {
+    vi.mocked(spawnText).mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "unbalanced transaction: 2026/03.journal:1",
+    });
+    const result = await addTransactionsSpec.handler({ transactions: [tx] });
+    expect(result.isError).toBe(true);
+    const body = textOf(result);
+    expect(body).toContain("but the ledger has errors");
+    expect(body).toContain("unbalanced transaction");
+  });
+
+  test("should surface an input-validation error without touching disk", async () => {
+    const result = await addTransactionsSpec.handler({
+      transactions: [{ ...tx, postings: [tx.postings[0]] }],
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("At least 2 postings");
+    expect(vi.mocked(spawnText)).not.toHaveBeenCalled();
+  });
+});

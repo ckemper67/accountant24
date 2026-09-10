@@ -29,3 +29,12 @@ export class AsyncMutex {
     return result;
   }
 }
+
+/**
+ * The single lock every writer tool shares. `add_transactions`,
+ * `add_balance_assertions`, `add_prices`, and `bulk_edit` each run their whole
+ * read/edit/write/`hledger check` cycle inside `writerMutex.runExclusive(...)`,
+ * so two writers never interleave on the journal files -- the standalone
+ * equivalent of pi running its ledger writers `executionMode: "sequential"`.
+ */
+export const writerMutex = new AsyncMutex();
