@@ -1,8 +1,12 @@
-// Bundle the pi extension to a single self-contained ESM file that the desktop
-// app loads via `pi -e`. pi's virtual modules are externalized so they resolve
-// against node_modules at load time (the agent runs under Electron-as-Node, so
-// node_modules is present). This is the lightweight dev/prelaunch step; the
-// release build calls the same bundling.
+// Bundle two entry points to self-contained ESM files:
+//   1. the pi extension the desktop app loads via `pi -e` -- pi's virtual
+//      modules are externalized so they resolve against node_modules at load
+//      time (the agent runs under Electron-as-Node, so node_modules is
+//      present);
+//   2. the standalone Accountant MCP server that Nous Hermes launches as a
+//      local stdio subprocess -- not loaded by pi, so nothing is externalized.
+// This is the lightweight dev/prelaunch step; the release build calls the same
+// bundling.
 
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -41,6 +45,21 @@ await build({
   platform: "node",
   outfile: OUT,
   external: VIRTUAL_MODULES,
+  logLevel: "info",
+});
+
+// The standalone MCP server. Nothing is externalized: esbuild tree-shakes
+// @earendil-works/pi-coding-agent down to the two library symbols ledger/ uses
+// (DEFAULT_MAX_BYTES, generateDiffString), and bundles the MCP SDK + zod.
+const MCP_OUT = join(ROOT, "packages", "pi-extension", "dist", "accountant24-mcp.js");
+
+await build({
+  entryPoints: [join(ROOT, "packages", "pi-extension", "src", "mcp", "server.ts")],
+  bundle: true,
+  format: "esm",
+  platform: "node",
+  outfile: MCP_OUT,
+  banner: { js: "#!/usr/bin/env node" },
   logLevel: "info",
 });
 
@@ -103,5 +122,6 @@ for (const navPage of nav.navigation.groups.flatMap((g) => g.pages)) {
 writeFileSync(join(DOCS_OUT, "contents.md"), `# Documentation pages\n\n${contents.join("\n")}\n`);
 
 console.log(`[bundle-extension] → ${OUT}`);
+console.log(`[bundle-extension] → ${MCP_OUT}`);
 console.log(`[bundle-extension] → ${SYSTEM_MD_OUT}`);
 console.log(`[bundle-extension] → ${DOCS_OUT}`);
