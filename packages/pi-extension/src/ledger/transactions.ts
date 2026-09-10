@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { generateDiffString } from "@earendil-works/pi-coding-agent";
 import { ACCOUNTANT24_WORKSPACE, LEDGER_DIR } from "../config";
+import { generateDiffString } from "./diff";
 import { HledgerCommandError, hledgerCheck } from "./hledger";
 import { resolveSafePath } from "./paths";
 
