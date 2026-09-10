@@ -16,4 +16,34 @@ describe("bulkEditTransactions() validation", () => {
       'from_payee is required when field is "payee"',
     );
   });
+
+  test("should require tag_name when field is tag_set", async () => {
+    await expect(bulkEditTransactions(["payee:X"], { field: "tag_set", new_value: "yes" })).rejects.toThrow(
+      'tag_name is required when field is "tag_set"',
+    );
+  });
+
+  test("should require tag_name when field is tag_remove", async () => {
+    await expect(bulkEditTransactions(["payee:X"], { field: "tag_remove", new_value: "" })).rejects.toThrow(
+      'tag_name is required when field is "tag_remove"',
+    );
+  });
+
+  test("should reject a tag_name with leading or trailing whitespace", async () => {
+    await expect(
+      bulkEditTransactions(["payee:X"], { field: "tag_set", new_value: "yes", tag_name: " review" }),
+    ).rejects.toThrow("tag_name must not have leading or trailing whitespace");
+  });
+
+  test("should reject a tag_name containing a comma, colon, or whitespace", async () => {
+    await expect(
+      bulkEditTransactions(["payee:X"], { field: "tag_set", new_value: "yes", tag_name: "a b" }),
+    ).rejects.toThrow("tag_name must not contain ',', ':', or whitespace");
+  });
+
+  test("should reject a tag_set value containing a comma", async () => {
+    await expect(
+      bulkEditTransactions(["payee:X"], { field: "tag_set", new_value: "a,b", tag_name: "review" }),
+    ).rejects.toThrow("new_value (tag) must not contain ',' or a newline");
+  });
 });

@@ -96,11 +96,21 @@ function fakeHledgerPrintJson(terms: string[]): string {
 
       const accounts: string[] = [];
       const tpostings: Array<{ paccount: string }> = [];
+      // Real hledger's `ttags`: [name, value] pairs from every comment in the transaction's
+      // own scope. This fake only recognizes this codebase's own dedicated-line shape
+      // (`; name: value` / `; name:`) -- sufficient for the tag tests seeded via `seed()`;
+      // tests that need hledger's other tag shapes (comma-separated, header-fused, an
+      // `apply tag` directive) inject `ttags` directly via `printOverride` instead.
+      const ttags: Array<[string, string]> = [];
       for (let j = i + 1; j < lines.length; j++) {
         const l = lines[j];
         if (l.trim() === "" || !/^\s/.test(l)) break;
         const body = l.replace(/^\s+/, "");
-        if (body.startsWith(";")) continue;
+        if (body.startsWith(";")) {
+          const tag = body.match(/^;\s*([A-Za-z0-9_.-]+)\s*:\s*(.*)$/);
+          if (tag) ttags.push([tag[1], tag[2].trim()]);
+          continue;
+        }
         // Model hledger's `paccount`: it excludes any posting status marker and the
         // brackets of virtual/balanced-virtual postings.
         const afterStatus = body.replace(/^[*!]\s+/, "");
@@ -117,7 +127,7 @@ function fakeHledgerPrintJson(terms: string[]): string {
       if (!terms.every((t) => termMatches(t, tx))) continue;
 
       const pos = { sourceName: file, sourceLine: i + 1, sourceColumn: 1 };
-      txns.push({ tsourcepos: [pos, pos], tpostings });
+      txns.push({ tsourcepos: [pos, pos], tpostings, ttags });
     }
   }
   return JSON.stringify(txns);
@@ -1175,5 +1185,494 @@ describe("bulk_edit_transactions: set_status", () => {
     await expect(run({ query: ["payee:EDK"], ...status("done") })).rejects.toThrow(
       'to (status) must be "cleared", "pending", or "unmarked"',
     );
+  });
+});
+
+// ── set_tag ──────────────────────────────────────────────────────────
+
+describe("bulk_edit_transactions: set_tag", () => {
+  const setTag = (tag: string, value: string) => ({ action: "set_tag" as const, tag, to: value });
+
+  test("adds a new tag right after the header when the transaction has none", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "yes") });
+
+    const lines = read("2026/03.journal").split("\n");
+    expect(lines[0]).toBe("2026-03-15 * EDK");
+    expect(lines[1]).toBe("    ; review: yes");
+    expect(lines[2]).toBe(posting("expenses:food:groceries", "45.00 EUR"));
+    expect(result.details.tagOutcomes).toEqual({ added: 1, overwritten: 0, removed: 0, unchanged: 0, skipped: 0 });
+    expect(result.content[0].text).toContain("Tagged 1 transaction(s) with `review` (1 newly)");
+  });
+
+  test("appends after an existing dedicated tag line without reordering", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        "    ; foo: bar",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+
+    await run({ query: ["payee:EDK"], ...setTag("review", "yes") });
+
+    const lines = read("2026/03.journal").split("\n");
+    expect(lines[1]).toBe("    ; foo: bar");
+    expect(lines[2]).toBe("    ; review: yes");
+  });
+
+  test("overwrites an existing tag with a different value", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        "    ; review: no",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "yes") });
+
+    expect(read("2026/03.journal").split("\n")[1]).toBe("    ; review: yes");
+    expect(result.details.tagOutcomes).toEqual({ added: 0, overwritten: 1, removed: 0, unchanged: 0, skipped: 0 });
+    expect(result.content[0].text).toContain("Tagged 1 transaction(s) with `review` (1 value changed)");
+  });
+
+  test("is a no-op when the value already matches", async () => {
+    const before = [
+      "2026-03-15 * EDK",
+      "    ; review: yes",
+      posting("expenses:food:groceries", "45.00 EUR"),
+      posting("assets:checking", "-45.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "yes") });
+
+    expect(read("2026/03.journal")).toBe(before);
+    expect(result.details.tagOutcomes?.unchanged).toBe(1);
+    expect(result.details.diffs).toHaveLength(0);
+  });
+
+  test("adds a value-less tag", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+
+    await run({ query: ["payee:EDK"], ...setTag("review", "") });
+
+    expect(read("2026/03.journal").split("\n")[1]).toBe("    ; review:");
+  });
+
+  test("editing a tag never touches a sibling tag sharing its name as a prefix", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        "    ; review: no",
+        "    ; review_date: 2026-01-01",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+
+    await run({ query: ["payee:EDK"], ...setTag("review", "yes") });
+
+    const lines = read("2026/03.journal").split("\n");
+    expect(lines[1]).toBe("    ; review: yes");
+    expect(lines[2]).toBe("    ; review_date: 2026-01-01");
+  });
+
+  test("matches the transaction's existing indentation for a newly inserted tag", async () => {
+    seed(
+      "2026/03.journal",
+      ["2026-03-15 * EDK", "  expenses:food:groceries    45.00 EUR", "  assets:checking          -45.00 EUR", ""].join(
+        "\n",
+      ),
+    );
+
+    await run({ query: ["payee:EDK"], ...setTag("review", "yes") });
+
+    expect(read("2026/03.journal").split("\n")[1]).toBe("  ; review: yes");
+  });
+
+  test("preserves CRLF line endings on the newly inserted tag line", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\r\n"),
+    );
+
+    await run({ query: ["payee:EDK"], ...setTag("review", "yes") });
+
+    const raw = read("2026/03.journal");
+    expect(raw).toContain("; review: yes\r\n");
+    expect(raw).not.toContain("\r\r");
+  });
+
+  test("skips a tag whose text lives on a comma-separated line, without corrupting it", async () => {
+    const before = [
+      "2026-03-15 * EDK",
+      "    ; review: yes, related_file: files/receipt.pdf",
+      posting("expenses:food:groceries", "45.00 EUR"),
+      posting("assets:checking", "-45.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+    printOverride = JSON.stringify([
+      {
+        tsourcepos: [{ sourceName: join(LEDGER, "2026/03.journal"), sourceLine: 1, sourceColumn: 1 }],
+        tpostings: [{ paccount: "expenses:food:groceries" }],
+        ttags: [
+          ["review", "yes"],
+          ["related_file", "files/receipt.pdf"],
+        ],
+      },
+    ]);
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "no") });
+
+    expect(read("2026/03.journal")).toBe(before);
+    expect(result.details.tagOutcomes?.skipped).toBe(1);
+    expect(result.details.warnings[0]).toContain('tag "review" exists but its text could not be safely located');
+  });
+
+  test("skips a tag fused into the header's own trailing comment", async () => {
+    const before = [
+      "2026-03-15 * EDK ; review: yes",
+      posting("expenses:food:groceries", "45.00 EUR"),
+      posting("assets:checking", "-45.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+    printOverride = JSON.stringify([
+      {
+        tsourcepos: [{ sourceName: join(LEDGER, "2026/03.journal"), sourceLine: 1, sourceColumn: 1 }],
+        tpostings: [{ paccount: "expenses:food:groceries" }],
+        ttags: [["review", "yes"]],
+      },
+    ]);
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "no") });
+
+    expect(read("2026/03.journal")).toBe(before);
+    expect(result.details.tagOutcomes?.skipped).toBe(1);
+  });
+
+  test("skips a tag reported present with no matching text anywhere (e.g. an apply tag directive)", async () => {
+    const before = [
+      "2026-03-15 * EDK",
+      posting("expenses:food:groceries", "45.00 EUR"),
+      posting("assets:checking", "-45.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+    printOverride = JSON.stringify([
+      {
+        tsourcepos: [{ sourceName: join(LEDGER, "2026/03.journal"), sourceLine: 1, sourceColumn: 1 }],
+        tpostings: [{ paccount: "expenses:food:groceries" }],
+        ttags: [["review", "yes"]],
+      },
+    ]);
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "no") });
+
+    expect(read("2026/03.journal")).toBe(before);
+    expect(result.details.tagOutcomes?.skipped).toBe(1);
+    // Never inserts a second, conflicting definition alongside the one it can't see.
+    expect(read("2026/03.journal")).not.toContain("; review:");
+  });
+
+  test("skips (both actions) when a tag name appears more than once in ttags", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        "    ; review: a",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+    printOverride = JSON.stringify([
+      {
+        tsourcepos: [{ sourceName: join(LEDGER, "2026/03.journal"), sourceLine: 1, sourceColumn: 1 }],
+        tpostings: [{ paccount: "expenses:food:groceries" }],
+        ttags: [
+          ["review", "a"],
+          ["review", "b"],
+        ],
+      },
+    ]);
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "yes") });
+
+    expect(result.details.tagOutcomes?.skipped).toBe(1);
+    expect(result.details.warnings[0]).toContain("ambiguous");
+  });
+
+  test("dry_run leaves the file byte-for-byte unchanged", async () => {
+    const before = [
+      "2026-03-15 * EDK",
+      posting("expenses:food:groceries", "45.00 EUR"),
+      posting("assets:checking", "-45.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "yes"), dry_run: true });
+
+    expect(read("2026/03.journal")).toBe(before);
+    expect(result.details.tagOutcomes?.added).toBe(1);
+    expect(result.details.diffs[0].diff).toContain("review: yes");
+  });
+
+  test("requires `tag`", async () => {
+    await expect(run({ query: ["payee:EDK"], action: "set_tag", to: "yes" })).rejects.toThrow(
+      "tag is required for set_tag",
+    );
+  });
+
+  test("rejects a tag name containing a regex metacharacter, matching only the literal name", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        "    ; review.2026: old",
+        "    ; reviewX2026: unrelated",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+    printOverride = JSON.stringify([
+      {
+        tsourcepos: [{ sourceName: join(LEDGER, "2026/03.journal"), sourceLine: 1, sourceColumn: 1 }],
+        tpostings: [{ paccount: "expenses:food:groceries" }],
+        ttags: [
+          ["review.2026", "old"],
+          ["reviewX2026", "unrelated"],
+        ],
+      },
+    ]);
+
+    await run({ query: ["payee:EDK"], ...setTag("review.2026", "new") });
+
+    const lines = read("2026/03.journal").split("\n");
+    expect(lines[1]).toBe("    ; review.2026: new");
+    expect(lines[2]).toBe("    ; reviewX2026: unrelated"); // untouched -- '.' must not match 'X'
+  });
+
+  test("falls back to four-space indentation when the transaction has no indented line to infer from", async () => {
+    // A header with no postings at all (invalid hledger on its own, but exercises the
+    // locator's fallback in isolation) -- dry_run so there is nothing for `hledger check`
+    // to reject.
+    seed("2026/03.journal", "2026-03-15 * EDK\n");
+    printOverride = JSON.stringify([
+      {
+        tsourcepos: [{ sourceName: join(LEDGER, "2026/03.journal"), sourceLine: 1, sourceColumn: 1 }],
+        tpostings: [],
+        ttags: [],
+      },
+    ]);
+
+    const result = await run({ query: ["payee:EDK"], ...setTag("review", "yes"), dry_run: true });
+
+    expect(result.details.tagOutcomes?.added).toBe(1);
+    expect(result.details.diffs[0].diff).toContain("    ; review: yes");
+  });
+});
+
+// ── remove_tag ───────────────────────────────────────────────────────
+
+describe("bulk_edit_transactions: remove_tag", () => {
+  const removeTag = (tag: string) => ({ action: "remove_tag" as const, tag, to: "" });
+
+  test("removes a tag on its own dedicated line, leaving siblings and postings intact", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        "    ; foo: bar",
+        "    ; review: yes",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+
+    const result = await run({ query: ["payee:EDK"], ...removeTag("review") });
+
+    const lines = read("2026/03.journal").split("\n");
+    expect(lines[1]).toBe("    ; foo: bar");
+    expect(lines[2]).toBe(posting("expenses:food:groceries", "45.00 EUR"));
+    expect(result.details.tagOutcomes?.removed).toBe(1);
+    expect(result.content[0].text).toContain("Removed tag `review` from 1 transaction(s)");
+  });
+
+  test("dry_run reports the pending removal without writing", async () => {
+    const before = [
+      "2026-03-15 * EDK",
+      "    ; review: yes",
+      posting("expenses:food:groceries", "45.00 EUR"),
+      posting("assets:checking", "-45.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+
+    const result = await run({ query: ["payee:EDK"], ...removeTag("review"), dry_run: true });
+
+    expect(read("2026/03.journal")).toBe(before);
+    expect(result.details.tagOutcomes?.removed).toBe(1);
+    expect(result.content[0].text).toContain("Would remove tag `review` from 1 transaction(s)");
+  });
+
+  test("removes the last remaining tag; the header goes straight into the first posting", async () => {
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        "    ; review: yes",
+        posting("expenses:food:groceries", "45.00 EUR"),
+        posting("assets:checking", "-45.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+
+    await run({ query: ["payee:EDK"], ...removeTag("review") });
+
+    const lines = read("2026/03.journal").split("\n");
+    expect(lines[0]).toBe("2026-03-15 * EDK");
+    expect(lines[1]).toBe(posting("expenses:food:groceries", "45.00 EUR"));
+  });
+
+  test("is a no-op, no warning, when the tag isn't present", async () => {
+    const before = [
+      "2026-03-15 * EDK",
+      posting("expenses:food:groceries", "45.00 EUR"),
+      posting("assets:checking", "-45.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+
+    const result = await run({ query: ["payee:EDK"], ...removeTag("review") });
+
+    expect(read("2026/03.journal")).toBe(before);
+    expect(result.details.tagOutcomes?.unchanged).toBe(1);
+    expect(result.details.warnings).toHaveLength(0);
+  });
+
+  test("skips a tag whose text lives on a comma-separated line, without corrupting it", async () => {
+    const before = [
+      "2026-03-15 * EDK",
+      "    ; review: yes, related_file: files/receipt.pdf",
+      posting("expenses:food:groceries", "45.00 EUR"),
+      posting("assets:checking", "-45.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+    printOverride = JSON.stringify([
+      {
+        tsourcepos: [{ sourceName: join(LEDGER, "2026/03.journal"), sourceLine: 1, sourceColumn: 1 }],
+        tpostings: [{ paccount: "expenses:food:groceries" }],
+        ttags: [
+          ["review", "yes"],
+          ["related_file", "files/receipt.pdf"],
+        ],
+      },
+    ]);
+
+    const result = await run({ query: ["payee:EDK"], ...removeTag("review") });
+
+    expect(read("2026/03.journal")).toBe(before);
+    expect(result.details.tagOutcomes?.skipped).toBe(1);
+  });
+
+  test("requires `tag`", async () => {
+    await expect(run({ query: ["payee:EDK"], action: "remove_tag", to: "" })).rejects.toThrow(
+      "tag is required for remove_tag",
+    );
+  });
+});
+
+// ── tag edits: multi-transaction ordering + rollback ────────────────
+
+describe("bulk_edit_transactions: tag edits across multiple matches", () => {
+  test("an insertion on a later transaction never shifts the startLine of one processed after it", async () => {
+    // Two transactions in one file: the first gets a new line inserted (line-count-changing),
+    // the second (further up... no, below) must still resolve to its correct, now-shifted
+    // location. Matches are processed bottom-up, so the lower transaction's insertion must
+    // not affect the upper transaction's startLine.
+    seed(
+      "2026/03.journal",
+      [
+        "2026-03-15 * EDK",
+        posting("expenses:food:groceries", "10.00 EUR"),
+        posting("assets:checking", "-10.00 EUR"),
+        "",
+        "2026-03-20 * EDK",
+        posting("expenses:food:groceries", "20.00 EUR"),
+        posting("assets:checking", "-20.00 EUR"),
+        "",
+      ].join("\n"),
+    );
+
+    const result = await run({ query: ["payee:EDK"], action: "set_tag", tag: "review", to: "yes" });
+
+    expect(result.details.tagOutcomes?.added).toBe(2);
+    const lines = read("2026/03.journal").split("\n");
+    expect(lines[0]).toBe("2026-03-15 * EDK");
+    expect(lines[1]).toBe("    ; review: yes");
+    expect(lines[2]).toBe(posting("expenses:food:groceries", "10.00 EUR"));
+    // Find the second transaction's header by content rather than a hardcoded index, since
+    // this assertion is exactly what would break if line-shifting were handled incorrectly.
+    const secondHeaderIdx = lines.indexOf("2026-03-20 * EDK");
+    expect(secondHeaderIdx).toBeGreaterThan(0);
+    expect(lines[secondHeaderIdx + 1]).toBe("    ; review: yes");
+    expect(lines[secondHeaderIdx + 2]).toBe(posting("expenses:food:groceries", "20.00 EUR"));
+  });
+
+  test("rolls the whole batch back, including tag insertions, when the ledger would be invalid", async () => {
+    const before = [
+      "2026-03-15 * EDK",
+      posting("expenses:food:groceries", "10.00 EUR"),
+      posting("assets:checking", "-10.00 EUR"),
+      "",
+    ].join("\n");
+    seed("2026/03.journal", before);
+    checkExit = 1;
+    checkStderr = "some unrelated validation error";
+
+    await expect(run({ query: ["payee:EDK"], action: "set_tag", tag: "review", to: "yes" })).rejects.toThrow(
+      "Modification reverted",
+    );
+
+    expect(read("2026/03.journal")).toBe(before);
   });
 });
