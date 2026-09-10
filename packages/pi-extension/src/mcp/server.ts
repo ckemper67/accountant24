@@ -11,11 +11,40 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { HledgerNotFoundError, runHledger } from "../ledger/hledger";
 import { registerAll } from "./registry";
 
+// hledger's `reg`/`aregister` reports size their columns to
+// `process.stdout.columns`. Over a stdio JSON-RPC pipe that is undefined, so
+// the report falls back to a narrow 80 cols and truncates account names. This
+// consumer is a program reading text, not a terminal -- give it a wide value.
+function widenReportOutput(): void {
+  const out = process.stdout as NodeJS.WriteStream & { columns?: number };
+  if (!out.columns) {
+    try {
+      out.columns = 240;
+    } catch {
+      // A real tty exposes `columns` as a read-only getter; nothing to do.
+    }
+  }
+}
+
 async function main(): Promise<void> {
-  // TODO(build-order step 3): run the workspace scaffold (ensureWorkspace +
-  // `hledger --version` check) here, before any tool can be called.
+  // Fail fast with a clear message if hledger is missing -- otherwise the first
+  // query surfaces an opaque "command not found" mid-conversation.
+  // TODO(build-order step 3): also run the workspace scaffold (ensureWorkspace)
+  // and a pinned-minimum hledger version check here.
+  try {
+    await runHledger(["--version"]);
+  } catch (err) {
+    if (err instanceof HledgerNotFoundError) {
+      process.stderr.write(`[accountant24-mcp] ${err.message}\n`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  widenReportOutput();
 
   const server = new McpServer({ name: "accountant24", version: "0.1.0" });
 
