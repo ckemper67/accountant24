@@ -89,7 +89,7 @@ async function ocrImage(filePath: string): Promise<string> {
 // ── CLI helpers ────────────────────────────────────────────────────────
 
 async function runPdftotext(filePath: string): Promise<string> {
-  return await runCli(["pdftotext", filePath, "-"], "pdftotext");
+  return await runCli(["pdftotext", "-layout", filePath, "-"], "pdftotext");
 }
 
 async function runPdftocairo(filePath: string, outputPrefix: string, page: number): Promise<void> {

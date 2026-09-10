@@ -4,6 +4,8 @@ export { addTransactionsTool } from "./add-transactions";
 export { bulkEditTransactionsTool } from "./bulk-edit-transactions";
 export { commitAndPushTool } from "./commit-and-push";
 export { extractTextTool } from "./extract-text";
+export { importExtractedTransactionsTool } from "./import-extracted-transactions";
+export { importTransactionsTool } from "./import-transactions";
 export { queryTool } from "./query";
 export { traceTransactionTool } from "./trace-transaction";
 export { validateTool } from "./validate";

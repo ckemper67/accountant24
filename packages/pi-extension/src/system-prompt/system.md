@@ -62,6 +62,7 @@ Your workspace is the current working directory. All file operations stay within
 # Account balances
 
 - When the user states an actual balance (for example "My cash balance is 200 EUR"), verify it against the ledger and record a checkpoint with `add_balance_assertions`; investigate discrepancies before anything else.
+- A statement balance reported by `import_transactions` (OFX/QFX/QBO) is verified the same way as a user-stated one -- compare with the ledger before recording an assertion.
 
 # Market prices
 
