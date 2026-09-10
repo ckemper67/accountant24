@@ -31,6 +31,28 @@ export async function push(cwd: string): Promise<void> {
   await spawn(["git", "push", "origin", "HEAD"], { cwd });
 }
 
+// Record/unit separators from our `--format`, so the trace parser can split commit
+// metadata from the patch that `-L` appends without colliding with journal text.
+const LOG_FORMAT = "%x1e%H%x1f%cI%x1f%s";
+
+/**
+ * Return `git log -L<start>,<end>:<relPath>` output: every commit that touched that
+ * (inclusive, 1-based) line range in `relPath`, newest first, each as our formatted
+ * metadata line followed by the range's unified diff. `relPath` is relative to `cwd`
+ * (the git root). Returns "" when there is no history (no commits yet, path untracked,
+ * not a repo) or git is unavailable, so callers can treat it as an empty trace.
+ */
+export async function logLineRange(cwd: string, relPath: string, startLine: number, endLine: number): Promise<string> {
+  const { exitCode, stdout } = await spawn(
+    ["git", "log", "--no-color", `-L${startLine},${endLine}:${relPath}`, `--format=${LOG_FORMAT}`],
+    { cwd },
+  );
+  // A non-zero exit (no history, but also any genuine git failure) is treated as an
+  // empty trace: the tool cannot distinguish "no commits" from a rarer git error here,
+  // and either way there is no history to show.
+  return exitCode === 0 ? stdout : "";
+}
+
 // ── Internals ───────────────────────────────────────────────────────
 
 async function spawn(
