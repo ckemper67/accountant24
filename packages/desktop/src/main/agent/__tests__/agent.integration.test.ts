@@ -230,6 +230,43 @@ describe("renderer IPC → host → renderer events", () => {
     const stateResponse = rendererLines(A).find((l) => l.id === "req-2");
     expect(stateResponse).toMatchObject({ success: true });
   });
+
+  it("should deliver a large get_messages transcript as several small chunk lines the renderer can rejoin", async () => {
+    // The size a single forwarded agent line must stay under: one whole-transcript
+    // frame (5+ MB observed) crossing the IPC boundary is the failure mode fixed
+    // here. 256 KiB is a generous ceiling well above the 96 KiB chunk budget.
+    const MAX_FORWARDED_LINE_BYTES = 256 * 1024;
+    await setup();
+    invoke("agent_send", { sessionPath: A, command: { type: "get_state", id: "warmup" } });
+    await flush();
+
+    // ~1 MB transcript: one IPC frame would be the exact failure mode being fixed.
+    const transcript = Array.from({ length: 400 }, (_, i) => ({
+      role: i % 2 ? "assistant" : "user",
+      content: `msg ${i} ${"w".repeat(2500)}`,
+    }));
+    fixtures[0].sessions.get(A)?.session.messages.push(...transcript);
+
+    invoke("agent_send", { sessionPath: A, command: { type: "get_messages", id: "req-gm" } });
+    await flush();
+
+    const frames = rendererLines(A).filter((l) => l.id === "req-gm");
+    expect(frames.length).toBeGreaterThan(1);
+    // Every forwarded line stays small — no single multi-MB IPC frame.
+    for (const c of h.sendToWindow.mock.calls) {
+      if (c[0] !== "agent-event") continue;
+      const payload = c[1] as { sessionPath: string; line: string };
+      if (payload.sessionPath !== A) continue;
+      if (JSON.parse(payload.line).id !== "req-gm") continue;
+      expect(Buffer.byteLength(payload.line, "utf8")).toBeLessThan(MAX_FORWARDED_LINE_BYTES);
+    }
+    // Frames carry sequential chunk markers, only the last final.
+    expect(frames.map((f) => (f.chunk as { seq: number }).seq)).toEqual(frames.map((_, i) => i));
+    expect((frames.at(-1)?.chunk as { final: boolean }).final).toBe(true);
+    // Rejoined payload is the original transcript, in order.
+    const rejoined = frames.flatMap((f) => (f.data as { messages: unknown[] }).messages);
+    expect(rejoined).toEqual(transcript);
+  });
 });
 
 describe("delete flow", () => {
