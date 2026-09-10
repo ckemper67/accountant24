@@ -48,9 +48,11 @@ await build({
   logLevel: "info",
 });
 
-// The standalone MCP server. Nothing is externalized: esbuild tree-shakes
-// @earendil-works/pi-coding-agent down to the two library symbols ledger/ uses
-// (DEFAULT_MAX_BYTES, generateDiffString), and bundles the MCP SDK + zod.
+// The standalone MCP server. Nothing is externalized and nothing from
+// @earendil-works/pi-coding-agent is imported by its module graph (the ledger
+// vendored the one function it needed), so this bundles the MCP SDK + zod + the
+// ledger code into one self-contained file. The workspace scaffold imports its
+// template files as text.
 const MCP_OUT = join(ROOT, "packages", "pi-extension", "dist", "accountant24-mcp.js");
 
 await build({
@@ -60,6 +62,7 @@ await build({
   platform: "node",
   outfile: MCP_OUT,
   banner: { js: "#!/usr/bin/env node" },
+  loader: { ".journal": "text", ".tmpl": "text" },
   logLevel: "info",
 });
 

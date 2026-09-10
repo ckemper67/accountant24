@@ -12,6 +12,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { HledgerNotFoundError, runHledger } from "../ledger/hledger";
+import { ensureWorkspace } from "../workspace/ensure";
 import { registerAll } from "./registry";
 
 // hledger's `reg`/`aregister` reports size their columns to
@@ -32,8 +33,8 @@ function widenReportOutput(): void {
 async function main(): Promise<void> {
   // Fail fast with a clear message if hledger is missing -- otherwise the first
   // query surfaces an opaque "command not found" mid-conversation.
-  // TODO(build-order step 3): also run the workspace scaffold (ensureWorkspace)
-  // and a pinned-minimum hledger version check here.
+  // TODO: also enforce a pinned-minimum hledger version (bulk_edit depends on
+  // the `hledger print -O json` tsourcepos shape).
   try {
     await runHledger(["--version"]);
   } catch (err) {
@@ -43,6 +44,10 @@ async function main(): Promise<void> {
     }
     throw err;
   }
+
+  // Seed a fresh workspace (dirs, starter journals, empty memory.md, git repo)
+  // before any tool can be called. Idempotent -- a no-op on an existing one.
+  await ensureWorkspace();
 
   widenReportOutput();
 
