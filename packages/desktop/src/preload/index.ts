@@ -43,6 +43,7 @@ const INVOKE_CHANNELS = new Set([
   "update_install",
   "workspace_dir",
   "workspace_open",
+  "diag_renderer_report",
 ]);
 
 const EVENT_CHANNELS = new Set([
