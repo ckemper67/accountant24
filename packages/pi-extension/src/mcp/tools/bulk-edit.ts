@@ -8,7 +8,7 @@ import {
 } from "../../ledger/bulk-edit";
 import { writerMutex } from "../mutex";
 import type { McpToolSpec } from "../registry";
-import { errorText, text } from "./_shared";
+import { commitWorkspace, errorText, text } from "./_shared";
 
 const inputSchema = {
   query: z
@@ -113,6 +113,8 @@ export const bulkEditSpec: McpToolSpec<typeof inputSchema> = {
 
       try {
         const result = await bulkEditTransactions(query, spec, dryRun);
+        // A dry run writes nothing; a real run that got here validated clean.
+        if (!result.dryRun) await commitWorkspace("Bulk edit");
         return text(summarize(result, to));
       } catch (err) {
         return errorText(renameParamsInError(err));

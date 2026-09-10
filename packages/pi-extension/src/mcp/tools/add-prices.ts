@@ -3,7 +3,7 @@ import { z } from "zod";
 import { type AddPriceParams, addPrices } from "../../ledger/transactions";
 import { writerMutex } from "../mutex";
 import type { McpToolSpec } from "../registry";
-import { errorText, formatSaved, text } from "./_shared";
+import { commitWorkspace, errorText, formatSaved, text } from "./_shared";
 
 const price = z.object({
   date: z.string().describe("Date the price was observed, YYYY-MM-DD, usually today"),
@@ -35,6 +35,7 @@ export const addPricesSpec: McpToolSpec<typeof inputSchema> = {
     return writerMutex.runExclusive(async () => {
       try {
         const result = await addPrices(args.prices as AddPriceParams[]);
+        await commitWorkspace("Add prices");
         return text(formatSaved("Price", result));
       } catch (err) {
         return errorText(err);

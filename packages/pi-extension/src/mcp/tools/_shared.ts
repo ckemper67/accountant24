@@ -1,5 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { ACCOUNTANT24_WORKSPACE } from "../../config";
 import type { AddTransactionsResult } from "../../ledger/transactions";
+import { commitAll } from "../../workspace/git";
 
 /** A tool result carrying a single plain-text block. */
 export function text(body: string): CallToolResult {
@@ -10,6 +12,17 @@ export function text(body: string): CallToolResult {
  *  content it can act on, not an opaque protocol failure. */
 export function errorText(err: unknown): CallToolResult {
   return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
+}
+
+/**
+ * Commit the workspace after a successful mutation, so a later bad write is
+ * recoverable with `git checkout`. Best-effort: `commitAll` logs and swallows a
+ * missing git or an empty commit -- never let bookkeeping fail the tool call.
+ * Only the success paths call this; a write that left the ledger invalid is
+ * deliberately left uncommitted.
+ */
+export function commitWorkspace(message: string): Promise<void> {
+  return commitAll(ACCOUNTANT24_WORKSPACE, message);
 }
 
 /**

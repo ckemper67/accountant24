@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { spawnText } from "../../../spawn";
 
 vi.mock("../../../spawn");
+// Stub the workspace git commit -- covered for real in workspace/__tests__.
+vi.mock("../../../workspace/git", () => ({ commitAll: vi.fn().mockResolvedValue(undefined), initRepo: vi.fn() }));
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

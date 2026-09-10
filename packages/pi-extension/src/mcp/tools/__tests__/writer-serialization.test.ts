@@ -7,6 +7,9 @@ import { describe, expect, test, vi } from "vitest";
 const events: string[] = [];
 let releaseFirst!: () => void;
 
+// Stub the workspace git commit so no real repo is touched.
+vi.mock("../../../workspace/git", () => ({ commitAll: vi.fn().mockResolvedValue(undefined), initRepo: vi.fn() }));
+
 vi.mock("../../../ledger/transactions", () => ({
   addTransactions: vi.fn(async () => {
     events.push("tx:start");

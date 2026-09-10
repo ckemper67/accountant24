@@ -3,7 +3,7 @@ import { z } from "zod";
 import { type AddTransactionParams, addTransactions } from "../../ledger/transactions";
 import { writerMutex } from "../mutex";
 import type { McpToolSpec } from "../registry";
-import { errorText, formatSaved, text } from "./_shared";
+import { commitWorkspace, errorText, formatSaved, text } from "./_shared";
 
 const posting = z.object({
   account: z.string().describe("Account name, e.g. Expenses:Food"),
@@ -50,6 +50,7 @@ export const addTransactionsSpec: McpToolSpec<typeof inputSchema> = {
     return writerMutex.runExclusive(async () => {
       try {
         const result = await addTransactions(args.transactions as AddTransactionParams[]);
+        await commitWorkspace("Add transactions");
         return text(formatSaved("Transaction", result));
       } catch (err) {
         return errorText(err);

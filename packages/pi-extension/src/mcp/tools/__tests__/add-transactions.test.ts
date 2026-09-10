@@ -1,8 +1,11 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { spawnText } from "../../../spawn";
+import { commitAll } from "../../../workspace/git";
 
 vi.mock("../../../spawn");
+// Stub the workspace git commit -- covered for real in workspace/__tests__.
+vi.mock("../../../workspace/git", () => ({ commitAll: vi.fn().mockResolvedValue(undefined), initRepo: vi.fn() }));
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,6 +59,17 @@ describe("addTransactionsSpec.handler()", () => {
     const body = textOf(result);
     expect(body).toContain(join(LEDGER, "2026", "03.journal"));
     expect(body).toContain("2026-03-15 * Whole Foods | Groceries");
+  });
+
+  test("should commit the workspace after a successful write", async () => {
+    await addTransactionsSpec.handler({ transactions: [tx] });
+    expect(vi.mocked(commitAll)).toHaveBeenCalledWith(expect.any(String), "Add transactions");
+  });
+
+  test("should not commit when the write left the ledger invalid", async () => {
+    vi.mocked(spawnText).mockResolvedValue({ exitCode: 1, stdout: "", stderr: "unbalanced" });
+    await addTransactionsSpec.handler({ transactions: [tx] });
+    expect(vi.mocked(commitAll)).not.toHaveBeenCalled();
   });
 
   test("should summarize a multi-transaction batch as a numbered list", async () => {

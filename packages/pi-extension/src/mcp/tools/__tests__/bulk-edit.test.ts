@@ -12,6 +12,8 @@ const bulkEditTransactions = vi.fn();
 vi.mock("../../../ledger/bulk-edit", () => ({
   bulkEditTransactions: (...args: unknown[]) => bulkEditTransactions(...args),
 }));
+// Stub the workspace git commit -- covered for real in workspace/__tests__.
+vi.mock("../../../workspace/git", () => ({ commitAll: vi.fn().mockResolvedValue(undefined), initRepo: vi.fn() }));
 
 const { bulkEditSpec } = await import("../bulk-edit.js");
 

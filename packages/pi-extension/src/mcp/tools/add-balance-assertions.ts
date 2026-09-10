@@ -3,7 +3,7 @@ import { z } from "zod";
 import { type AddBalanceAssertionParams, addBalanceAssertions } from "../../ledger/transactions";
 import { writerMutex } from "../mutex";
 import type { McpToolSpec } from "../registry";
-import { errorText, formatSaved, text } from "./_shared";
+import { commitWorkspace, errorText, formatSaved, text } from "./_shared";
 
 const assertion = z.object({
   date: z.string().describe("Assertion date, YYYY-MM-DD, usually today"),
@@ -35,6 +35,7 @@ export const addBalanceAssertionsSpec: McpToolSpec<typeof inputSchema> = {
     return writerMutex.runExclusive(async () => {
       try {
         const result = await addBalanceAssertions(args.assertions as AddBalanceAssertionParams[]);
+        await commitWorkspace("Add balance assertions");
         return text(formatSaved("Balance assertion", result));
       } catch (err) {
         return errorText(err);
