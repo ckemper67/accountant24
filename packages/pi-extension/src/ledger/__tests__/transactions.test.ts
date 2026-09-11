@@ -530,6 +530,223 @@ describe("addTransaction() formatting", () => {
   });
 });
 
+// ── Commodity postings (unitPrice / lotCost) ─────────────────────────
+
+describe("addTransaction() commodity postings", () => {
+  const buyStripe = {
+    date: "2026-03-15",
+    payee: "Broker",
+    postings: [
+      {
+        account: "Assets:Investments:IBKR",
+        amount: 684,
+        currency: "STRIPE",
+        unitPrice: { amount: 40.46, currency: "USD" },
+      },
+      { account: "Assets:Bank:Checking", amount: -27674.64, currency: "USD" },
+    ],
+  };
+
+  test("should render unitPrice as `@ price currency`", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction(buyStripe);
+    expect(result.transactionText).toContain("684.00 STRIPE @ 40.46 USD");
+  });
+
+  test("should render lotCost as `{price currency}`", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction({
+      ...buyStripe,
+      postings: [
+        { ...buyStripe.postings[0], unitPrice: undefined, lotCost: { amount: 40.46, currency: "USD" } },
+        buyStripe.postings[1],
+      ],
+    });
+    expect(result.transactionText).toContain("684.00 STRIPE {40.46 USD}");
+  });
+
+  test("should render unitPrice before lotCost when both are set", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction({
+      ...buyStripe,
+      postings: [{ ...buyStripe.postings[0], lotCost: { amount: 40.46, currency: "USD" } }, buyStripe.postings[1]],
+    });
+    expect(result.transactionText).toContain("684.00 STRIPE @ 40.46 USD {40.46 USD}");
+  });
+
+  test("should render a sale posting with a sale unitPrice and the original lotCost", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction({
+      date: "2026-06-01",
+      payee: "Broker",
+      postings: [
+        {
+          account: "Assets:Investments:IBKR",
+          amount: -100,
+          currency: "STRIPE",
+          unitPrice: { amount: 50, currency: "USD" },
+          lotCost: { amount: 40.46, currency: "USD" },
+        },
+        { account: "Assets:Bank:Checking", amount: 5000, currency: "USD" },
+        { account: "Income:Capital Gains", amount: -954, currency: "USD" },
+      ],
+    });
+    expect(result.transactionText).toContain("-100.00 STRIPE @ 50.00 USD {40.46 USD}");
+  });
+
+  test("should preserve fractional commodity quantities beyond 2 decimals", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction({
+      ...buyStripe,
+      postings: [
+        {
+          account: "Assets:Investments:IBKR",
+          amount: 0.12345,
+          currency: "STRIPE",
+          unitPrice: { amount: 40.46, currency: "USD" },
+        },
+        { account: "Assets:Bank:Checking", amount: -5, currency: "USD" },
+      ],
+    });
+    expect(result.transactionText).toContain("0.12345 STRIPE");
+  });
+
+  test("should preserve fractional unit prices beyond 2 decimals", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction({
+      ...buyStripe,
+      postings: [
+        {
+          account: "Assets:Investments:IBKR",
+          amount: 684,
+          currency: "STRIPE",
+          unitPrice: { amount: 40.4678, currency: "USD" },
+        },
+        { account: "Assets:Bank:Checking", amount: -27679.65, currency: "USD" },
+      ],
+    });
+    expect(result.transactionText).toContain("@ 40.4678 USD");
+  });
+
+  test("should pad a whole-number unit price to 2 decimals", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction({
+      ...buyStripe,
+      postings: [
+        {
+          account: "Assets:Investments:IBKR",
+          amount: 10,
+          currency: "STRIPE",
+          unitPrice: { amount: 50, currency: "USD" },
+        },
+        { account: "Assets:Bank:Checking", amount: -500, currency: "USD" },
+      ],
+    });
+    expect(result.transactionText).toContain("@ 50.00 USD");
+  });
+
+  test("should quote a commodity symbol containing digits", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction({
+      ...buyStripe,
+      postings: [
+        {
+          account: "Assets:Investments:IBKR",
+          amount: 10,
+          currency: "SOL2",
+          unitPrice: { amount: 40, currency: "USD" },
+        },
+        { account: "Assets:Bank:Checking", amount: -400, currency: "USD" },
+      ],
+    });
+    expect(result.transactionText).toContain('10.00 "SOL2" @ 40.00 USD');
+  });
+
+  test("should auto-declare unitPrice and lotCost currencies as commodities", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    await addTransaction({
+      ...buyStripe,
+      postings: [
+        {
+          account: "Assets:Investments:IBKR",
+          amount: 684,
+          currency: "STRIPE",
+          unitPrice: { amount: 40.46, currency: "USD" },
+          lotCost: { amount: 40.46, currency: "USD" },
+        },
+        buyStripe.postings[1],
+      ],
+    });
+    const commodities = readFileSync(join(LEDGER, "commodities.journal"), "utf-8");
+    expect(commodities).toContain("commodity STRIPE");
+    expect(commodities).toContain("commodity USD");
+  });
+
+  test("should reject unitPrice missing amount", async () => {
+    await expect(
+      addTransaction({
+        ...buyStripe,
+        postings: [
+          {
+            account: "Assets:Investments:IBKR",
+            amount: 684,
+            currency: "STRIPE",
+            unitPrice: { currency: "USD" } as any,
+          },
+          buyStripe.postings[1],
+        ],
+      }),
+    ).rejects.toThrow("missing `unitPrice.amount`");
+  });
+
+  test("should reject unitPrice with non-positive amount", async () => {
+    await expect(
+      addTransaction({
+        ...buyStripe,
+        postings: [
+          {
+            account: "Assets:Investments:IBKR",
+            amount: 684,
+            currency: "STRIPE",
+            unitPrice: { amount: 0, currency: "USD" },
+          },
+          buyStripe.postings[1],
+        ],
+      }),
+    ).rejects.toThrow("`unitPrice.amount` must be positive");
+  });
+
+  test("should reject unitPrice missing currency", async () => {
+    await expect(
+      addTransaction({
+        ...buyStripe,
+        postings: [
+          { account: "Assets:Investments:IBKR", amount: 684, currency: "STRIPE", unitPrice: { amount: 40.46 } as any },
+          buyStripe.postings[1],
+        ],
+      }),
+    ).rejects.toThrow("missing `unitPrice.currency`");
+  });
+
+  test("should reject lotCost missing amount", async () => {
+    await expect(
+      addTransaction({
+        ...buyStripe,
+        postings: [
+          { account: "Assets:Investments:IBKR", amount: 684, currency: "STRIPE", lotCost: { currency: "USD" } as any },
+          buyStripe.postings[1],
+        ],
+      }),
+    ).rejects.toThrow("missing `lotCost.amount`");
+  });
+
+  test("should accept a posting with neither unitPrice nor lotCost (plain currency posting)", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addTransaction(basicParams);
+    expect(result.ledgerIsValid).toBe(true);
+  });
+});
+
 // ── File routing ────────────────────────────────────────────────────
 
 describe("addTransaction() file routing", () => {

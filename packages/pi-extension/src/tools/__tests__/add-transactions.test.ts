@@ -208,6 +208,70 @@ test("rejects posting without currency", async () => {
   ).rejects.toThrow("missing currency");
 });
 
+test("formats a commodity posting with unitPrice and lotCost", async () => {
+  writeFileSync(join(LEDGER, "main.journal"), "");
+  const result = await run({
+    transactions: [
+      {
+        date: "2026-03-15",
+        payee: "Broker",
+        postings: [
+          {
+            account: "Assets:Investments:IBKR",
+            amount: 684,
+            currency: "STRIPE",
+            unitPrice: { amount: 40.46, currency: "USD" },
+            lotCost: { amount: 40.46, currency: "USD" },
+          },
+          { account: "Assets:Bank:Checking", amount: -27674.64, currency: "USD" },
+        ],
+      },
+    ],
+  });
+  const text = result.content[0].text;
+  expect(text).toContain("684.00 STRIPE @ 40.46 USD {40.46 USD}");
+});
+
+test("declares unitPrice and lotCost currencies as commodities", async () => {
+  writeFileSync(join(LEDGER, "main.journal"), "");
+  await run({
+    transactions: [
+      {
+        date: "2026-03-15",
+        payee: "Broker",
+        postings: [
+          {
+            account: "Assets:Investments:IBKR",
+            amount: 684,
+            currency: "STRIPE",
+            unitPrice: { amount: 40.46, currency: "USD" },
+          },
+          { account: "Assets:Bank:Checking", amount: -27674.64, currency: "USD" },
+        ],
+      },
+    ],
+  });
+  const commodities = readFileSync(join(LEDGER, "commodities.journal"), "utf-8");
+  expect(commodities).toContain("commodity STRIPE");
+  expect(commodities).toContain("commodity USD");
+});
+
+test("rejects posting with unitPrice missing amount", async () => {
+  await expect(
+    run({
+      transactions: [
+        {
+          ...basicTx,
+          postings: [
+            { account: "Assets:IBKR", amount: 10, currency: "STRIPE", unitPrice: { currency: "USD" } },
+            { account: "Assets:Checking", amount: -400, currency: "USD" },
+          ],
+        },
+      ],
+    }),
+  ).rejects.toThrow("missing `unitPrice.amount`");
+});
+
 test("rejects invalid date", async () => {
   await expect(run({ transactions: [{ ...basicTx, date: "March 15" }] })).rejects.toThrow("Invalid date format");
 });

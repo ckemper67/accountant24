@@ -5,8 +5,38 @@ import { TOOL_LABELS } from "../tool-labels";
 
 const Posting = Type.Object({
   account: Type.String({ description: "Account name, e.g. Expenses:Food" }),
-  amount: Type.Number({ description: "Amount — use negative for outflows (e.g. -45), positive for inflows" }),
-  currency: Type.String({ description: "Currency code, e.g. USD, EUR" }),
+  amount: Type.Number({
+    description:
+      "Amount, or commodity quantity for a commodity posting (e.g. 684 shares) — use negative for outflows (e.g. -45), positive for inflows",
+  }),
+  currency: Type.String({ description: "Currency code, e.g. USD, EUR — or a commodity symbol, e.g. STRIPE, BTC" }),
+  unitPrice: Type.Optional(
+    Type.Object(
+      {
+        amount: Type.Number({ description: "Price of one unit of this posting's commodity" }),
+        currency: Type.String({ description: "Currency the price is quoted in, e.g. USD" }),
+      },
+      {
+        description:
+          "The price of one unit of this posting's commodity — renders as `@ price currency`. Set when buying or " +
+          "selling a commodity (stock, crypto, foreign cash) at a specific rate; omit for plain currency postings.",
+      },
+    ),
+  ),
+  lotCost: Type.Optional(
+    Type.Object(
+      {
+        amount: Type.Number({ description: "Cost basis of one unit of this posting's commodity" }),
+        currency: Type.String({ description: "Currency the cost basis is quoted in, e.g. USD" }),
+      },
+      {
+        description:
+          "Fixes this posting's cost basis for lot matching — renders as `{price currency}`. Set when buying a " +
+          "commodity to hold as an investment (usually the same value as `unitPrice`); when selling, set it to the " +
+          "original lot's cost basis (its `unitPrice` at purchase) so hledger can match the lot and compute capital gains.",
+      },
+    ),
+  ),
 });
 
 const Tag = Type.Object({
@@ -47,6 +77,11 @@ export const addTransactionsTool: ToolDefinition<typeof Params, AddTransactionsR
   label: TOOL_LABELS.add_transactions,
   description: "Add one or more transactions. Auto-routes to the correct monthly files and validates.",
   promptSnippet: "Record transactions (auto-routes to monthly files, validates)",
+  promptGuidelines: [
+    "Buying or selling a commodity (stock, crypto, foreign cash) is a transaction with a posting carrying a " +
+      "commodity quantity and currency (e.g. amount: 684, currency: STRIPE) plus `unitPrice`/`lotCost` for the " +
+      "cost annotation — never hand-edit the journal for this.",
+  ],
   // Serialize every ledger write: "sequential" makes pi run any batch containing this
   // tool one call at a time, so concurrent read/edit/write/validate cycles never
   // interleave on shared journal files.

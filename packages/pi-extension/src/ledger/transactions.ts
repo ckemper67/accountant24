@@ -15,6 +15,16 @@ export interface AddTransactionParams {
     account: string;
     amount: number;
     currency: string;
+    /** Price of one unit of this posting's commodity, in another currency —
+     *  renders as `@ price currency`. Set when the posting is a commodity
+     *  quantity (shares, crypto, foreign cash) bought or sold at a specific rate. */
+    unitPrice?: { amount: number; currency: string };
+    /** Fixes this posting's cost basis for lot matching — renders as
+     *  `{price currency}`. Set when buying a commodity to hold as an investment
+     *  (usually the same value as `unitPrice`); when selling, set it to the
+     *  original lot's cost basis so hledger can match the lot and compute
+     *  capital gains. */
+    lotCost?: { amount: number; currency: string };
   }>;
   tags?: Array<{ name: string; value?: string }>;
 }
@@ -48,6 +58,10 @@ interface FormattedEntry {
   fullFilePath: string;
 }
 
+function isString(value: string | undefined): value is string {
+  return value !== undefined;
+}
+
 // ── Public ──────────────────────────────────────────────────────────
 
 // Serialization is handled at the tool layer: the add_transactions tool is registered
@@ -59,7 +73,9 @@ export async function addTransactions(
 ): Promise<AddTransactionsResult> {
   validateEach(paramsList, validateInputs, "Transaction");
   const formatted = paramsList.map((params) => routeByMonth(params.date, formatTransaction(params)));
-  const currencies = paramsList.flatMap((params) => params.postings.map((p) => p.currency));
+  const currencies = paramsList.flatMap((params) =>
+    params.postings.flatMap((p) => [p.currency, p.unitPrice?.currency, p.lotCost?.currency].filter(isString)),
+  );
   return persistFormatted(formatted, currencies, signal);
 }
 
@@ -263,6 +279,25 @@ function validateInputs(params: Pick<AddTransactionParams, "date" | "postings">)
     if (!p.currency) {
       throw new Error(`Posting for ${p.account} is missing currency.`);
     }
+    validateCost(p.account, "unitPrice", p.unitPrice);
+    validateCost(p.account, "lotCost", p.lotCost);
+  }
+}
+
+function validateCost(
+  account: string,
+  field: "unitPrice" | "lotCost",
+  cost?: { amount: number; currency: string },
+): void {
+  if (!cost) return;
+  if (cost.amount == null) {
+    throw new Error(`Posting for ${account} is missing \`${field}.amount\`.`);
+  }
+  if (!(cost.amount > 0)) {
+    throw new Error(`Posting for ${account} \`${field}.amount\` must be positive.`);
+  }
+  if (!cost.currency) {
+    throw new Error(`Posting for ${account} is missing \`${field}.currency\`.`);
   }
 }
 
@@ -323,7 +358,13 @@ function formatTransaction(params: AddTransactionParams): string {
 
   for (const p of sortedPostings) {
     const sign = p.amount < 0 ? "-" : "";
-    const amountStr = `${sign}${Math.abs(p.amount).toFixed(2)} ${p.currency}`;
+    let amountStr = `${sign}${formatPostingAmount(Math.abs(p.amount))} ${quoteCommodity(p.currency)}`;
+    if (p.unitPrice) {
+      amountStr += ` @ ${formatPostingAmount(p.unitPrice.amount)} ${quoteCommodity(p.unitPrice.currency)}`;
+    }
+    if (p.lotCost) {
+      amountStr += ` {${formatPostingAmount(p.lotCost.amount)} ${quoteCommodity(p.lotCost.currency)}}`;
+    }
     const prefix = `    ${p.account}`;
     // Align first digit at column 70 (1-indexed); sign hangs left at 69
     const targetCol = 69 - sign.length;
@@ -354,6 +395,17 @@ function formatBalanceAssertion(params: AddBalanceAssertionParams): string {
  *  — e.g. a ticker like "SOL2". */
 function quoteCommodity(commodity: string): string {
   return /^[\p{L}\p{Sc}]+$/u.test(commodity) ? commodity : `"${commodity}"`;
+}
+
+/** Decimal rendering for posting amounts and cost annotations: preserves
+ *  precision beyond 2 places — commodity quantities and unit prices can carry
+ *  meaningful decimals (0.12345 shares, 40.4678 USD/share) — while padding
+ *  whole/short values to the conventional money look (45 -> 45.00). */
+function formatPostingAmount(amount: number): string {
+  const plain = formatPriceAmount(amount);
+  const dot = plain.indexOf(".");
+  const decimals = dot === -1 ? 0 : plain.length - dot - 1;
+  return decimals < 2 ? amount.toFixed(2) : plain;
 }
 
 /** Plain decimal rendering preserving the given precision — market prices
