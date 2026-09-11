@@ -12,8 +12,8 @@
 // falls back to settings/first-available). Never resolve models CLI-style here
 // — that path can process.exit(1) on an unresolvable model.
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { InMemoryModelsStore } from "@earendil-works/pi-ai";
 import {
   type CreateAgentSessionRuntimeFactory,
   createAgentSessionFromServices,
@@ -36,14 +36,17 @@ export function createRuntimeFactory(cfg: AgentHostConfig): RuntimeFactory {
   const nameBySkillDir = new Map(cfg.skills.map((skill) => [skill.path, skill.name]));
   // One auth/models runtime shared by every session in this host — reading
   // the workspace files the llm-providers/ modules write. Killing the host (the
-  // agent_restart flow) is what picks up credential changes.
-  // In-memory models store: we never refresh catalogs over the network, so
-  // pi's file-backed default would only write an empty models-store.json into
-  // the user's ledger directory. See llm-providers/registry.ts.
+  // agent_restart flow) is what picks up credential changes, and — since the
+  // models store is file-backed once it exists — what picks up a "Refresh
+  // models" too. models-store.json is only pointed at once refreshModels() has
+  // actually written it; until then a fresh host would otherwise drop an empty
+  // one into the user's ledger directory on every launch. See
+  // llm-providers/registry.ts.
+  const modelsStorePath = join(cfg.workspaceDir, "models-store.json");
   const modelRuntimePromise = ModelRuntime.create({
     authPath: join(cfg.workspaceDir, "auth.json"),
     modelsPath: join(cfg.workspaceDir, "models.json"),
-    modelsStore: new InMemoryModelsStore(),
+    ...(existsSync(modelsStorePath) ? { modelsStorePath } : {}),
   });
   // A creation failure is reported per session (the caller turns a rejected
   // runtime into session_error); this keeps it from also being an unhandled

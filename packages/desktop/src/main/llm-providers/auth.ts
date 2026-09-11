@@ -6,7 +6,7 @@ import { CredentialSynchronizationError, type ModelRuntime } from "@earendil-wor
 import { ipcMain } from "electron";
 import { trackProviderConnected } from "../analytics";
 import { providerDefaults as piProviderDefaults } from "./pi-defaults";
-import { createProviderRuntime } from "./registry";
+import { createProviderRuntime, refreshModels } from "./registry";
 
 function uniqueProviders(runtime: ModelRuntime): string[] {
   const seen = new Set<string>();
@@ -146,6 +146,19 @@ async function authSetKey(provider: string, key: string) {
   return { type: "done", provider };
 }
 
+/** Re-fetch every provider's model catalog over the network. Failure (offline,
+ *  timeout, a provider's endpoint down) leaves the previously stored catalog
+ *  in place — see registry.refreshModels() — so this only ever reports the
+ *  failure, never removes a model the user could already see. */
+async function authRefreshModels() {
+  try {
+    const result = await refreshModels();
+    return result.ok ? { type: "done" } : { type: "error", message: result.message };
+  } catch (e) {
+    return { type: "error", message: errorMessage(e) };
+  }
+}
+
 async function authLogout(provider: string) {
   if (!provider) return { type: "error", message: "missing provider" };
   const runtime = await createProviderRuntime();
@@ -166,6 +179,7 @@ export function registerAuthIpc(): void {
   ipcMain.handle("auth_status", () => authStatus());
   ipcMain.handle("auth_providers", () => authProviders());
   ipcMain.handle("auth_models", () => authModels());
+  ipcMain.handle("auth_refresh_models", () => authRefreshModels());
   ipcMain.handle("auth_set_key", (_e, { provider, key }: { provider: string; key: string }) =>
     authSetKey(provider, key),
   );

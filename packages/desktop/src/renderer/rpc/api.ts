@@ -183,6 +183,7 @@ export const authApi = {
   status: () => api.invoke<AuthStatus>("auth_status"),
   providers: () => api.invoke<AuthProviders>("auth_providers"),
   models: () => api.invoke<AuthModels>("auth_models"),
+  refreshModels: () => api.invoke<{ type: string; message?: string }>("auth_refresh_models"),
   setKey: (provider: string, key: string) =>
     api.invoke<{ type: string; message?: string }>("auth_set_key", { provider, key }),
   logout: (provider: string) => api.invoke<{ type: string; message?: string }>("auth_logout", { provider }),
