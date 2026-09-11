@@ -3,6 +3,7 @@
 // of pi's /login and /logout. The connect flows themselves live in the dialogs
 // in provider-dialogs.tsx.
 
+import { RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/shadcn/badge";
 import { Button } from "@/components/shadcn/button";
@@ -11,10 +12,20 @@ import { Spinner } from "@/components/shadcn/spinner";
 import { useOAuthLogin } from "@/hooks/use-oauth-login";
 import { defaultModelPatch, pickDefaultModel } from "@/lib/defaultModelPick";
 import { addEnabledModels, parseModelId } from "@/lib/enabledModels";
+import { cn } from "@/lib/utils";
 import { agentApi, authApi, settingsApi } from "@/rpc/api";
 import type { AppSettings, AuthProviderRow, AuthStatus } from "@/rpc/types";
 import { ErrorBanner, Section, SettingsRow, SettingsRows } from "./parts";
 import { ApiKeyDialog, OAuthSignInDialog } from "./provider-dialogs";
+
+/** How long the refresh keeps spinning, however fast the answer arrives. Short
+ *  enough not to hold anyone up, long enough to register as a refresh. Same
+ *  idea as the plugin marketplace's Refresh button. */
+const MIN_REFRESH_MS = 500;
+
+/** Wait out whatever is left of the minimum. */
+const settle = (startedAt: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, Math.max(0, MIN_REFRESH_MS - (Date.now() - startedAt))));
 
 function ProvidersList({ status, reload }: { status: AuthStatus | null; reload: () => Promise<void> }) {
   const [apiKeyProvider, setApiKeyProvider] = useState<AuthProviderRow | null>(null);
@@ -261,6 +272,85 @@ function ProviderRow({
   );
 }
 
+/** A refresh can surface models a scoped enabled-list would otherwise hide —
+ *  same reasoning as adopting a newly added provider's models (adoptProviderModels
+ *  above): a model appearing for the first time shouldn't start out hidden.
+ *  `beforeIds` is the model list snapshot taken before the refresh ran. */
+async function enableNewlyDiscoveredModels(beforeIds: ReadonlySet<string>): Promise<void> {
+  try {
+    const after = await authApi.models();
+    const allIds = after.models.map((m) => `${m.provider}/${m.id}`);
+    const toEnable = allIds.filter((id) => !beforeIds.has(id));
+    if (toEnable.length === 0) return;
+    const settings = await settingsApi.get();
+    const next = addEnabledModels(settings.enabledModels, toEnable, allIds);
+    if (next !== undefined && JSON.stringify(next) !== JSON.stringify(settings.enabledModels ?? [])) {
+      await settingsApi.set({ enabledModels: next });
+    }
+  } catch {
+    // Best-effort: failing to widen the composer list shouldn't block the refresh.
+  }
+}
+
+/** Pulls the newest model catalog over the network — the manual counterpart to
+ *  the offline-by-default reads everywhere else in this file (see
+ *  llm-providers/registry.ts). A provider whose fetch fails keeps whatever
+ *  catalog it already had, so failure only ever surfaces as an error, never as
+ *  a model disappearing. */
+function RefreshModelsButton({ onRefreshed }: { onRefreshed: () => void | Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // A refresh that lands after the settings page closed must not set state.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const refresh = async () => {
+    const startedAt = Date.now();
+    setBusy(true);
+    setError(null);
+    try {
+      // Snapshotted before the refresh, so afterwards we can tell which ids are
+      // genuinely new rather than just re-fetching the same list twice.
+      const before = await authApi.models();
+      const beforeIds = new Set(before.models.map((m) => `${m.provider}/${m.id}`));
+      const result = await authApi.refreshModels();
+      if (result.type === "error") throw new Error(result.message ?? "Couldn't refresh models.");
+      // The agent caches models at startup, so restart it to pick up whatever
+      // the refresh added; this also notifies the composer to re-fetch its list.
+      await agentApi.restart();
+      await enableNewlyDiscoveredModels(beforeIds);
+      await onRefreshed();
+    } catch (e) {
+      if (alive.current) setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      // A cached catalog comes back in a few milliseconds, which would flash
+      // the spinning icon too briefly to read as anything.
+      await settle(startedAt);
+      if (alive.current) setBusy(false);
+    }
+  };
+
+  return (
+    <div className="px-6 pt-5">
+      <div className="flex items-center justify-end">
+        <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={busy}>
+          {/* The icon spins in place rather than turning into a spinner: the
+              button keeps its shape, and the thing that is turning is the same
+              thing that was clicked. */}
+          <RefreshCwIcon className={cn(busy && "animate-spin motion-reduce:animate-none")} />
+          Refresh models
+        </Button>
+      </div>
+      {error && <ErrorBanner message={error} />}
+    </div>
+  );
+}
+
 export function ProvidersSettings() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
 
@@ -274,6 +364,7 @@ export function ProvidersSettings() {
 
   return (
     <div>
+      <RefreshModelsButton onRefreshed={reload} />
       <ProvidersList status={status} reload={reload} />
     </div>
   );

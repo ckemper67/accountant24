@@ -26,6 +26,10 @@ const h = vi.hoisted(() => {
       listCredentials: vi.fn<() => Promise<unknown[]>>(async () => []),
       login: vi.fn<(p: string, t: string, i: Interaction) => Promise<unknown>>(async () => ({ type: "api_key" })),
       logout: vi.fn<(p: string) => Promise<void>>(async () => {}),
+      refresh: vi.fn<(opts: unknown) => Promise<{ aborted: boolean; errors: Map<string, Error> }>>(async () => ({
+        aborted: false,
+        errors: new Map(),
+      })),
     },
     trackProviderConnected: vi.fn(),
   };
@@ -75,6 +79,7 @@ beforeEach(() => {
   h.modelRuntime.listCredentials.mockImplementation(async () => []);
   h.modelRuntime.login.mockImplementation(async () => ({ type: "api_key" }));
   h.modelRuntime.logout.mockImplementation(async () => {});
+  h.modelRuntime.refresh.mockImplementation(async () => ({ aborted: false, errors: new Map() }));
   vi.resetModules();
 });
 
@@ -334,5 +339,34 @@ describe("auth_logout", () => {
       type: "error",
       message: "auth.json is locked",
     });
+  });
+});
+
+describe("auth_refresh_models", () => {
+  it("should force a network refresh and report success", async () => {
+    await setup();
+
+    expect(await invoke("auth_refresh_models")).toEqual({ type: "done" });
+    expect(h.modelRuntime.refresh).toHaveBeenCalledWith({ allowNetwork: true, force: true });
+  });
+
+  it("should surface a per-provider fetch failure without touching what was already stored", async () => {
+    h.modelRuntime.refresh.mockResolvedValue({
+      aborted: false,
+      errors: new Map([["openai", new Error("timed out")]]),
+    });
+    await setup();
+
+    expect(await invoke("auth_refresh_models")).toEqual({
+      type: "error",
+      message: "Couldn't refresh 1 provider. Check your connection and try again.",
+    });
+  });
+
+  it("should report an unexpected throw the same way other auth handlers do", async () => {
+    h.modelRuntime.refresh.mockRejectedValue(new Error("network unreachable"));
+    await setup();
+
+    expect(await invoke("auth_refresh_models")).toEqual({ type: "error", message: "network unreachable" });
   });
 });

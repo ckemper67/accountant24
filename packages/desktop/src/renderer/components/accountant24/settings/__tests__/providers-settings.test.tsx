@@ -15,6 +15,7 @@ vi.mock("@/rpc/api", () => ({
     addAllOllama: vi.fn(),
     models: vi.fn(),
     setKey: vi.fn(),
+    refreshModels: vi.fn(),
   },
   settingsApi: { get: vi.fn(), set: vi.fn() },
 }));
@@ -99,6 +100,7 @@ beforeEach(() => {
   vi.mocked(authApi.removeOllama).mockResolvedValue({ type: "ok" });
   vi.mocked(authApi.addAllOllama).mockResolvedValue({ type: "ok", count: 1 });
   vi.mocked(authApi.models).mockResolvedValue({ type: "models", models: [], providerDefaults: {} });
+  vi.mocked(authApi.refreshModels).mockResolvedValue({ type: "done" });
   vi.mocked(agentApi.restart).mockResolvedValue(undefined);
   vi.mocked(settingsApi.get).mockResolvedValue({});
   vi.mocked(settingsApi.set).mockResolvedValue({});
@@ -191,7 +193,11 @@ describe("ProvidersSettings", () => {
       );
       render(<ProvidersSettings />);
       await screen.findByText("OpenAI (env)");
-      expect(screen.queryByRole("button")).not.toBeInTheDocument();
+      // Refresh models is a page-level action, unrelated to this row; the row
+      // itself offers nothing since the provider can't be disconnected here.
+      expect(screen.queryByRole("button", { name: "Disconnect" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "API Key" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Sign In" })).not.toBeInTheDocument();
     });
 
     it("should offer Disconnect for a configured Ollama provider even when not removable", async () => {
@@ -703,6 +709,132 @@ describe("ProvidersSettings", () => {
       // The button returns to its idle label so the user can retry.
       expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
       expect(agentApi.restart).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Refresh models", () => {
+    it("should restart the agent and reload provider status after a successful refresh", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(
+        status([row({ provider: "anthropic", displayName: "Anthropic", configured: true, removable: true })]),
+      );
+      render(<ProvidersSettings />);
+      await screen.findByText("Anthropic");
+      const statusCallsBefore = vi.mocked(authApi.status).mock.calls.length;
+
+      fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+      await waitFor(() => expect(agentApi.restart).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(authApi.status).mock.calls.length).toBeGreaterThan(statusCallsBefore);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("should surface the failure and keep the existing providers when the refresh fails", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(
+        status([row({ provider: "anthropic", displayName: "Anthropic", configured: true, removable: true })]),
+      );
+      vi.mocked(authApi.refreshModels).mockResolvedValue({
+        type: "error",
+        message: "Couldn't refresh 1 provider. Check your connection and try again.",
+      });
+      render(<ProvidersSettings />);
+      await screen.findByText("Anthropic");
+
+      fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+      expect(
+        await screen.findByText("Couldn't refresh 1 provider. Check your connection and try again."),
+      ).toBeInTheDocument();
+      // The previously loaded provider is still shown — a failed refresh falls
+      // back to whatever was already there, it never clears the list.
+      expect(screen.getByText("Anthropic")).toBeInTheDocument();
+      expect(agentApi.restart).not.toHaveBeenCalled();
+    });
+
+    it("should re-enable the button after a failed refresh so the user can retry", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(status([]));
+      vi.mocked(authApi.refreshModels).mockResolvedValue({ type: "error", message: "offline" });
+      render(<ProvidersSettings />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+      await screen.findByText("offline");
+      // The button stays disabled for a minimum spin duration even once the
+      // answer is back, so this needs to wait it out rather than assert right away.
+      await waitFor(() => expect(screen.getByRole("button", { name: "Refresh models" })).toBeEnabled());
+    });
+
+    it("should widen the enabled-model list to a model the refresh newly discovered", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(
+        status([row({ provider: "groq", displayName: "Groq", configured: true, removable: true })]),
+      );
+      // A scoped list that deliberately excludes anthropic/sonnet — it must
+      // stay excluded, since the refresh didn't just discover every model.
+      vi.mocked(settingsApi.get).mockResolvedValue({ enabledModels: ["groq/llama"] });
+      vi.mocked(authApi.models)
+        .mockResolvedValueOnce({
+          type: "models",
+          models: [
+            { provider: "groq", id: "llama" },
+            { provider: "anthropic", id: "sonnet" },
+          ],
+          providerDefaults: {},
+        } as never)
+        .mockResolvedValueOnce({
+          type: "models",
+          models: [
+            { provider: "groq", id: "llama" },
+            { provider: "anthropic", id: "sonnet" },
+            { provider: "groq", id: "mixtral" },
+          ],
+          providerDefaults: {},
+        } as never);
+
+      render(<ProvidersSettings />);
+      await screen.findByText("Groq");
+      fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+      await waitFor(() =>
+        expect(settingsApi.set).toHaveBeenCalledWith({ enabledModels: ["groq/llama", "groq/mixtral"] }),
+      );
+    });
+
+    it("should leave the enabled-model list untouched when the refresh finds nothing new", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(
+        status([row({ provider: "groq", displayName: "Groq", configured: true, removable: true })]),
+      );
+      vi.mocked(settingsApi.get).mockResolvedValue({ enabledModels: ["groq/llama"] });
+      vi.mocked(authApi.models).mockResolvedValue({
+        type: "models",
+        models: [{ provider: "groq", id: "llama" }],
+        providerDefaults: {},
+      } as never);
+
+      render(<ProvidersSettings />);
+      await screen.findByText("Groq");
+      fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+      await waitFor(() => expect(agentApi.restart).toHaveBeenCalledTimes(1));
+      expect(settingsApi.set).not.toHaveBeenCalled();
+    });
+
+    it("should not widen the enabled-model list when the refresh fails", async () => {
+      vi.mocked(authApi.status).mockResolvedValue(
+        status([row({ provider: "groq", displayName: "Groq", configured: true, removable: true })]),
+      );
+      vi.mocked(settingsApi.get).mockResolvedValue({ enabledModels: ["groq/llama"] });
+      vi.mocked(authApi.refreshModels).mockResolvedValue({ type: "error", message: "offline" });
+      vi.mocked(authApi.models).mockResolvedValue({
+        type: "models",
+        models: [{ provider: "groq", id: "llama" }],
+        providerDefaults: {},
+      } as never);
+
+      render(<ProvidersSettings />);
+      await screen.findByText("Groq");
+      fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+
+      await screen.findByText("offline");
+      expect(settingsApi.set).not.toHaveBeenCalled();
     });
   });
 });

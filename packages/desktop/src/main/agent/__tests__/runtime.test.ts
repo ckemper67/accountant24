@@ -1,4 +1,3 @@
-import { InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentHostConfig } from "../../../shared/agentHost";
 import type { UiBridge } from "../host/host";
@@ -24,6 +23,9 @@ const h = vi.hoisted(() => ({
   createServices: vi.fn(async (_opts: unknown) => h.services),
   createFromServices: vi.fn(async (_opts: unknown) => ({ session: h.session, extensionsResult: {} })),
   createRuntime: vi.fn(),
+  // Whether models-store.json already exists on disk — true by default so
+  // most specs exercise the common (already-refreshed-once) path.
+  existsSync: vi.fn(() => true),
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
@@ -33,6 +35,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSessionFromServices: h.createFromServices,
   createAgentSessionRuntime: h.createRuntime,
 }));
+vi.mock("node:fs", () => ({ existsSync: h.existsSync }));
 
 const cfg: AgentHostConfig = {
   workspaceDir: "/ws",
@@ -56,6 +59,7 @@ const fakeRuntime = { session: h.session, dispose: vi.fn(async () => {}) };
 
 beforeEach(() => {
   vi.resetModules();
+  h.existsSync.mockReturnValue(true);
   // The mocked createAgentSessionRuntime behaves like the real one: it invokes
   // the given factory with the resolved options, then returns the runtime.
   h.createRuntime.mockImplementation(
@@ -86,18 +90,28 @@ describe("createRuntimeFactory()", () => {
     expect(h.runtimeCreate).toHaveBeenCalledWith({
       authPath: "/ws/auth.json",
       modelsPath: "/ws/models.json",
-      modelsStore: expect.anything(),
+      modelsStorePath: "/ws/models-store.json",
     });
   });
 
-  it("should keep pi's catalog cache in memory, out of the user's ledger directory", async () => {
+  it("should point the models store at the same file the Settings screen's manual refresh writes", async () => {
     await createRuntimeForSession();
 
-    // A file-backed store would drop an empty models-store.json beside the
-    // ledger; we never refresh catalogs over the network, so there is nothing
-    // to persist.
-    const options = h.runtimeCreate.mock.calls[0][0] as { modelsStore?: { write?: unknown } };
-    expect(options.modelsStore).toBeInstanceOf(InMemoryModelsStore);
+    // File-backed (not in-memory): a "Refresh models" click persists to this
+    // same file, and the agent host is restarted afterwards (agent_restart) to
+    // pick it up — see llm-providers/registry.ts.
+    const options = h.runtimeCreate.mock.calls[0][0] as { modelsStorePath?: string };
+    expect(options.modelsStorePath).toBe("/ws/models-store.json");
+  });
+
+  it("should keep the models store in memory until a refresh has actually written one", async () => {
+    // No models-store.json yet (nobody has clicked "Refresh models"): a
+    // file-backed store would otherwise drop an empty one into the user's
+    // ledger directory on every single launch.
+    h.existsSync.mockReturnValue(false);
+    await createRuntimeForSession();
+
+    const options = h.runtimeCreate.mock.calls[0][0] as { modelsStorePath?: string };
     expect("modelsStorePath" in options).toBe(false);
   });
 

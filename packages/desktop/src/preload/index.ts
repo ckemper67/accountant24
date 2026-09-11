@@ -12,6 +12,7 @@ const INVOKE_CHANNELS = new Set([
   "auth_status",
   "auth_providers",
   "auth_models",
+  "auth_refresh_models",
   "auth_set_key",
   "auth_logout",
   "auth_detect_ollama",
