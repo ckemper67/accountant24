@@ -6,7 +6,7 @@ dependency on the Electron app or the pi coding-agent runtime. Two pieces:
 | Piece | What it is | Installed with |
 | --- | --- | --- |
 | **MCP server** (`accountant24-mcp.js`) | stdio server exposing `query`, `lookup`, `validate`, `add_transactions`, `add_balance_assertions`, `add_prices`, `bulk_edit`, `memory_edit`; scaffolds a fresh workspace on startup | `hermes mcp add` |
-| **Skill** (`skills/finance/accountant/`) | the persona + procedure, and `reference/accountant-prompt.md` (the ported system prompt) | `hermes skill add` |
+| **Skill** (`skills/finance/accountant/`) | the persona + procedure, and `reference/accountant-prompt.md` (the ported system prompt) | copy into `~/.hermes/skills/` |
 
 Hermes manages its own per-turn context and memory; this integration doesn't
 inject either -- the model calls `lookup` / `query` when it needs ledger state,
@@ -47,22 +47,30 @@ That writes `packages/pi-extension/dist/accountant24-mcp.js` (self-contained;
 
    ```sh
    hermes mcp add accountant \
+     --env ACCOUNTANT24_WORKSPACE=~/.accountant24 \
      --command node \
-     --args /ABS/PATH/TO/accountant24-mcp.js \
-     --env ACCOUNTANT24_WORKSPACE=~/.accountant24
+     --args /ABS/PATH/TO/accountant24-mcp.js
    ```
 
-   Use whichever path applies from "Get the MCP server" above. Confirm the
-   prompt to enable the tools. `terminal.backend: local` still needs to be set
-   separately if it isn't already (see `config.example.yaml` for the
-   hand-edit form of everything above, if you'd rather skip the CLI).
+   `--args` must be the last option (it greedily consumes everything after
+   it), so `--env` and `--command` come first. Use whichever path applies
+   from "Get the MCP server" above. Confirmed live: connects and discovers all
+   8 tools with their descriptions, then prompts to enable them. Say `y`.
+   `terminal.backend: local` still needs to be set separately if it isn't
+   already (see `config.example.yaml` for the hand-edit form of everything
+   above, if you'd rather skip the CLI).
 
-2. **Skill** -- not (yet) shipped inside the packaged app, so this step needs a
-   checkout of this repo regardless of where the MCP server came from:
+2. **Skill** -- there is no CLI install for a local skill directory (`hermes
+   skills install` only takes a registry identifier or an HTTPS URL to a
+   SKILL.md; `hermes skills tap add` only takes a GitHub repo). Copy it in:
 
    ```sh
-   hermes skill add packages/pi-extension/hermes/skills/finance/accountant
+   mkdir -p ~/.hermes/skills/finance
+   cp -R packages/pi-extension/hermes/skills/finance/accountant ~/.hermes/skills/finance/
    ```
+
+   This needs a checkout of this repo regardless of where the MCP server came
+   from -- the skill isn't (yet) shipped inside the packaged app.
 
 3. **Workspace** -- if `~/.accountant24` (or your chosen path) doesn't exist,
    the server scaffolds it (dirs, starter journals, empty `memory.md`, git
