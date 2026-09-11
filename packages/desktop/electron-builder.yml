@@ -48,6 +48,11 @@ extraResources:
     to: tessdata
   - from: resources/accountant24-extension.js
     to: accountant24-extension.js
+  # Standalone MCP server (Nous Hermes integration): not loaded by pi, but
+  # shipped at a fixed path so a Hermes install can point at the installed app
+  # instead of a repo checkout. See packages/pi-extension/hermes/README.md.
+  - from: resources/accountant24-mcp.js
+    to: accountant24-mcp.js
   # Static system prompt passed to the agent via `pi --system-prompt`.
   - from: resources/system.md
     to: system.md

@@ -1,0 +1,24 @@
+# Accountant24 on Hermes -- for reference only. `hermes mcp add` (see
+# README.md) writes this block for you; hand-edit only if you prefer that.
+#
+# Replace ${userHome}/.accountant24 with the workspace folder, if not default.
+
+mcp_servers:
+  accountant:
+    command: "node"
+    args: ["/ABS/PATH/TO/accountant24-mcp.js"]
+    env:
+      # Hermes does NOT pass the shell environment to a stdio MCP server, so the
+      # workspace must be set here explicitly.
+      ACCOUNTANT24_WORKSPACE: "${userHome}/.accountant24"
+    # "full" trusts every tool. Use "untrusted" to make the writers
+    # (add_transactions, add_balance_assertions, add_prices, bulk_edit,
+    # memory_edit) require human approval; the read-only tools are annotated
+    # readOnlyHint and stay ungated either way.
+    trust: full
+    supports_parallel_tool_calls: false
+
+# Required: the stdio MCP server and the agent's file tools must share one
+# filesystem.
+terminal:
+  backend: local

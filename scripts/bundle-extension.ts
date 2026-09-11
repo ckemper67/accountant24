@@ -48,9 +48,11 @@ await build({
   logLevel: "info",
 });
 
-// The standalone MCP server. Nothing is externalized: esbuild tree-shakes
-// @earendil-works/pi-coding-agent down to the two library symbols ledger/ uses
-// (DEFAULT_MAX_BYTES, generateDiffString), and bundles the MCP SDK + zod.
+// The standalone MCP server. Nothing is externalized and nothing from
+// @earendil-works/pi-coding-agent is imported by its module graph (the ledger
+// vendored the one function it needed), so this bundles the MCP SDK + zod + the
+// ledger code into one self-contained file. The workspace scaffold imports its
+// template files as text.
 const MCP_OUT = join(ROOT, "packages", "pi-extension", "dist", "accountant24-mcp.js");
 
 await build({
@@ -60,8 +62,16 @@ await build({
   platform: "node",
   outfile: MCP_OUT,
   banner: { js: "#!/usr/bin/env node" },
+  loader: { ".journal": "text", ".tmpl": "text" },
   logLevel: "info",
 });
+
+// Also land it next to the pi extension bundle so electron-builder's
+// extraResources ships it inside the packaged app -- a Hermes install then
+// points at a fixed path inside the installed Accountant24, no repo checkout
+// or `node scripts/bundle-extension.ts` required.
+const MCP_RESOURCE_OUT = join(ROOT, "packages", "desktop", "resources", "accountant24-mcp.js");
+copyFileSync(MCP_OUT, MCP_RESOURCE_OUT);
 
 // system.md ships as its own resource: the app passes it to pi via
 // --system-prompt, so pi natively appends the skills block around it.
@@ -123,5 +133,6 @@ writeFileSync(join(DOCS_OUT, "contents.md"), `# Documentation pages\n\n${content
 
 console.log(`[bundle-extension] → ${OUT}`);
 console.log(`[bundle-extension] → ${MCP_OUT}`);
+console.log(`[bundle-extension] → ${MCP_RESOURCE_OUT}`);
 console.log(`[bundle-extension] → ${SYSTEM_MD_OUT}`);
 console.log(`[bundle-extension] → ${DOCS_OUT}`);

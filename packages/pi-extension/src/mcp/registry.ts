@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ZodRawShape } from "zod";
+import { READ_ONLY_SPECS, WRITER_SPECS } from "./tools";
 
 /**
  * One MCP tool the accountant server exposes. `config` is forwarded verbatim to
@@ -26,10 +27,11 @@ export interface McpToolSpec<Shape extends ZodRawShape = ZodRawShape> {
 }
 
 /**
- * The tools, in registration order. Populated by later build-order steps:
- * read-only (`query`, `lookup`, `validate`) first, then the writers.
+ * The tools, in registration order: read-only (`query`, `lookup`, `validate`)
+ * first, then the writers (`add_transactions`, `add_balance_assertions`,
+ * `add_prices`, `bulk_edit`).
  */
-export const TOOL_SPECS: McpToolSpec[] = [];
+export const TOOL_SPECS: McpToolSpec[] = [...READ_ONLY_SPECS, ...WRITER_SPECS];
 
 /** Register every spec on the server, in order. */
 export function registerAll(server: McpServer, specs: readonly McpToolSpec[] = TOOL_SPECS): void {

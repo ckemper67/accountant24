@@ -1,6 +1,24 @@
+import { existsSync, readFileSync } from "node:fs";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // The MCP server's workspace scaffold imports its template files as text
+  // (esbuild does this via a `text` loader at bundle time). Mirror that for the
+  // test runner so those modules resolve to their file contents.
+  plugins: [
+    {
+      name: "accountant24-text-templates",
+      enforce: "pre",
+      load(id: string) {
+        // Strip any Vite-appended query (?v=, ?import, ...) before matching, and
+        // only handle a real file on disk -- anything else falls through to Vite.
+        const path = id.split("?", 1)[0];
+        if ((path.endsWith(".journal") || path.endsWith(".tmpl")) && existsSync(path)) {
+          return `export default ${JSON.stringify(readFileSync(path, "utf8"))};`;
+        }
+      },
+    },
+  ],
   resolve: {
     // Mirror the desktop app's `@` alias so component tests can load sources
     // that import via "@/...".

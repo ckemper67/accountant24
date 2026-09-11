@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { generateDiffString } from "@earendil-works/pi-coding-agent";
+import { generateDiffString } from "./diff";
 
 // A buffered, snapshot-backed editor for a set of journal files.
 //
