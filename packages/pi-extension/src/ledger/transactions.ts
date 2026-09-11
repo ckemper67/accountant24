@@ -15,6 +15,16 @@ export interface AddTransactionParams {
     account: string;
     amount: number;
     currency: string;
+    /** Price of one unit of this posting's commodity, in another currency —
+     *  renders as `@ price currency`. Set when the posting is a commodity
+     *  quantity (shares, crypto, foreign cash) bought or sold at a specific rate. */
+    unitPrice?: { amount: number; currency: string };
+    /** Fixes this posting's cost basis for lot matching — renders as
+     *  `{price currency}`. Set when buying a commodity to hold as an investment
+     *  (usually the same value as `unitPrice`); when selling, set it to the
+     *  original lot's cost basis so hledger can match the lot and compute
+     *  capital gains. */
+    lotCost?: { amount: number; currency: string };
   }>;
   tags?: Array<{ name: string; value?: string }>;
 }
@@ -48,6 +58,10 @@ interface FormattedEntry {
   fullFilePath: string;
 }
 
+function isString(value: string | undefined): value is string {
+  return value !== undefined;
+}
+
 // ── Public ──────────────────────────────────────────────────────────
 
 /**
@@ -63,7 +77,9 @@ export async function addTransactions(
 ): Promise<AddTransactionsResult> {
   validateEach(paramsList, validateInputs, "Transaction");
   const formatted = paramsList.map((params) => routeByMonth(params.date, formatTransaction(params)));
-  const currencies = paramsList.flatMap((params) => params.postings.map((p) => p.currency));
+  const currencies = paramsList.flatMap((params) =>
+    params.postings.flatMap((p) => [p.currency, p.unitPrice?.currency, p.lotCost?.currency].filter(isString)),
+  );
   return persistFormatted(formatted, currencies, signal);
 }
 
@@ -311,6 +327,25 @@ function validateInputs(params: Pick<AddTransactionParams, "date" | "postings">)
     if (!p.currency) {
       throw new Error(`Posting for ${p.account} is missing currency.`);
     }
+    validateCost(p.account, "unitPrice", p.unitPrice);
+    validateCost(p.account, "lotCost", p.lotCost);
+  }
+}
+
+function validateCost(
+  account: string,
+  field: "unitPrice" | "lotCost",
+  cost?: { amount: number; currency: string },
+): void {
+  if (!cost) return;
+  if (cost.amount == null) {
+    throw new Error(`Posting for ${account} is missing \`${field}.amount\`.`);
+  }
+  if (!(cost.amount > 0)) {
+    throw new Error(`Posting for ${account} \`${field}.amount\` must be positive.`);
+  }
+  if (!cost.currency) {
+    throw new Error(`Posting for ${account} is missing \`${field}.currency\`.`);
   }
 }
 
@@ -371,7 +406,13 @@ function formatTransaction(params: AddTransactionParams): string {
 
   for (const p of sortedPostings) {
     const sign = p.amount < 0 ? "-" : "";
-    const amountStr = `${sign}${Math.abs(p.amount).toFixed(2)} ${p.currency}`;
+    let amountStr = `${sign}${formatPriceAmount(Math.abs(p.amount))} ${quoteCommodity(p.currency)}`;
+    if (p.unitPrice) {
+      amountStr += ` @ ${formatPriceAmount(p.unitPrice.amount)} ${quoteCommodity(p.unitPrice.currency)}`;
+    }
+    if (p.lotCost) {
+      amountStr += ` {${formatPriceAmount(p.lotCost.amount)} ${quoteCommodity(p.lotCost.currency)}}`;
+    }
     const prefix = `    ${p.account}`;
     // Align first digit at column 70 (1-indexed); sign hangs left at 69
     const targetCol = 69 - sign.length;
@@ -405,9 +446,10 @@ function quoteCommodity(commodity: string): string {
 }
 
 /** Plain decimal rendering preserving the given precision, padded to at least
- *  2 decimals so price rows line up — market prices carry meaning beyond 2
- *  decimals (0.0205), so no rounding, only padding; tiny prices must never
- *  fall into exponential notation. */
+ *  2 decimals so price and amount rows line up — market prices and commodity
+ *  quantities/unit prices carry meaning beyond 2 decimals (0.0205, 0.12345
+ *  shares), so no rounding, only padding; tiny prices must never fall into
+ *  exponential notation. */
 function formatPriceAmount(amount: number): string {
   const plain = String(amount);
   const exponential = plain.toLowerCase().includes("e");

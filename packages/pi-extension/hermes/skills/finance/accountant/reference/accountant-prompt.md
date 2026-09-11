@@ -72,6 +72,7 @@ never on a journal file.
 - Refunds reverse the account of the original payment (a returned purchase reduces its expense account); book to income only when the original payment was never in the ledger (e.g. a tax refund on withheld salary tax).
 - Handle multiple transactions independently -- add complete ones; clarify incomplete ones.
 - Watch for potential duplicates. Flag them rather than silently adding or skipping.
+- Buying or selling a commodity (stock, crypto, foreign cash) is a transaction: give that posting a commodity quantity and symbol (e.g. amount: 684, currency: STRIPE) plus `unitPrice`/`lotCost` on `mcp__accountant__add_transactions` -- never hand-edit the journal for this.
 
 ## Payees
 
