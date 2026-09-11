@@ -66,6 +66,13 @@ await build({
   logLevel: "info",
 });
 
+// Also land it next to the pi extension bundle so electron-builder's
+// extraResources ships it inside the packaged app -- a Hermes install then
+// points at a fixed path inside the installed Accountant24, no repo checkout
+// or `node scripts/bundle-extension.ts` required.
+const MCP_RESOURCE_OUT = join(ROOT, "packages", "desktop", "resources", "accountant24-mcp.js");
+copyFileSync(MCP_OUT, MCP_RESOURCE_OUT);
+
 // system.md ships as its own resource: the app passes it to pi via
 // --system-prompt, so pi natively appends the skills block around it.
 copyFileSync(SYSTEM_MD_SRC, SYSTEM_MD_OUT);
@@ -126,5 +133,6 @@ writeFileSync(join(DOCS_OUT, "contents.md"), `# Documentation pages\n\n${content
 
 console.log(`[bundle-extension] → ${OUT}`);
 console.log(`[bundle-extension] → ${MCP_OUT}`);
+console.log(`[bundle-extension] → ${MCP_RESOURCE_OUT}`);
 console.log(`[bundle-extension] → ${SYSTEM_MD_OUT}`);
 console.log(`[bundle-extension] → ${DOCS_OUT}`);

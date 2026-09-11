@@ -23,9 +23,15 @@ and durable facts go in Hermes' own memory, not a separate file.
   exits with an install message if missing).
 - **Node** (to run the bundle) -- ships with Hermes.
 
-## Build the MCP server
+## Get the MCP server
 
-From the repo root:
+**Already have the Accountant24 desktop app installed?** `accountant24-mcp.js`
+ships inside it (an `extraResources` entry, built alongside the pi extension
+bundle) at a fixed path -- no checkout, no build step:
+
+- macOS: `/Applications/Accountant24.app/Contents/Resources/accountant24-mcp.js`
+
+**No desktop app, just this repo?** Build it from the repo root:
 
 ```sh
 npm ci
@@ -46,11 +52,13 @@ That writes `packages/pi-extension/dist/accountant24-mcp.js` (self-contained;
      --env ACCOUNTANT24_WORKSPACE=~/.accountant24
    ```
 
-   Confirm the prompt to enable the tools. `terminal.backend: local` still
-   needs to be set separately if it isn't already (see `config.example.yaml`
-   for the hand-edit form of everything above, if you'd rather skip the CLI).
+   Use whichever path applies from "Get the MCP server" above. Confirm the
+   prompt to enable the tools. `terminal.backend: local` still needs to be set
+   separately if it isn't already (see `config.example.yaml` for the
+   hand-edit form of everything above, if you'd rather skip the CLI).
 
-2. **Skill**
+2. **Skill** -- not (yet) shipped inside the packaged app, so this step needs a
+   checkout of this repo regardless of where the MCP server came from:
 
    ```sh
    hermes skill add packages/pi-extension/hermes/skills/finance/accountant
@@ -59,7 +67,8 @@ That writes `packages/pi-extension/dist/accountant24-mcp.js` (self-contained;
 3. **Workspace** -- if `~/.accountant24` (or your chosen path) doesn't exist,
    the server scaffolds it (dirs, starter journals, empty `memory.md`, git
    repo) on first launch. If it already has a `ledger/main.journal` the server
-   leaves it untouched.
+   leaves it untouched -- in particular, the desktop app's own
+   `~/.accountant24` is untouched.
 
 ## Verify
 
