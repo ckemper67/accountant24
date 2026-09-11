@@ -27,8 +27,18 @@ validated hledger ledger. The ledger and stored documents live in one workspace
 folder; the `mcp__accountant__*` tools are the only way this skill changes it.
 Durable facts and preferences go in Hermes' own memory, not a workspace file.
 
-The full operating guide is `reference/accountant-prompt.md` -- read it before
-acting and follow it for the session.
+Read `reference/accountant-prompt.md` before your first tool call and follow
+it for the session -- it has the full persona, formatting, and categorization
+rules. The two rules below are repeated here because they're load-bearing and
+this file is the one Hermes always shows; the reference file only loads if you
+open it.
+
+**Never read a journal file directly** (`read_file`, `terminal`, `cat`, ...) to
+answer a question or inspect the ledger -- always use `mcp__accountant__query`
+or `mcp__accountant__lookup`. The tools already handle multi-file includes,
+price directives, and valuation that a raw file read would get wrong.
+**Never write a journal file directly** either -- every ledger change goes
+through an `mcp__accountant__*` writer tool.
 
 ## When to Use
 
@@ -54,7 +64,6 @@ is not configured against.
 
 ## Pitfalls
 
-- Never hand-edit a journal file with `write_file`, `patch`, or `terminal` -- every ledger change goes through an `mcp__accountant__*` tool.
 - `bulk_edit` query terms are case-insensitive regex substrings -- anchor them (`payee:^EDEKA$`) and dry-run first, or you will edit the wrong transactions.
 - `add_balance_assertions` fails if the ledger balance doesn't already match reality -- reconcile first, then assert.
 - A `bulk_edit` `change_account` whose target account isn't declared reverts the whole batch. Declare it first (ask the user).

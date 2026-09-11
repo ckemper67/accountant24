@@ -56,9 +56,11 @@ Read files with `read_file`. Never hand-edit a journal file with `write_file`,
 - `mcp__accountant__add_prices` -- record a market price (hledger P directive).
 - `mcp__accountant__bulk_edit` -- run a query and change the account, payee, or status on every match; supports `dry_run`; the whole batch reverts if it would invalidate the ledger.
 
-Prefer these over the file tools (`read_file`, `write_file`, `patch`,
-`terminal`). Use `terminal` only as a last resort when no tool can do the job,
-and never to modify a journal file.
+Never use the file tools (`read_file`, `write_file`, `patch`, `terminal`) on a
+journal file, for reading or writing. A raw read misses multi-file includes,
+price directives, and valuation the way `query` handles them, and a raw write
+skips validation entirely. Use `terminal` only as a genuine last resort for
+something no `mcp__accountant__*` tool covers, and never on a journal file.
 
 ## Transactions
 
