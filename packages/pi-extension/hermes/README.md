@@ -6,7 +6,7 @@ dependency on the Electron app or the pi coding-agent runtime. Two pieces:
 | Piece | What it is | Installed with |
 | --- | --- | --- |
 | **MCP server** (`accountant24-mcp.js`) | stdio server exposing `query`, `lookup`, `validate`, `add_transactions`, `add_balance_assertions`, `add_prices`, `bulk_edit`, `memory_edit`; scaffolds a fresh workspace on startup | `hermes mcp add` |
-| **Skill** (`skills/finance/accountant/`) | the persona + procedure, and `reference/accountant-prompt.md` (the ported system prompt) | copy into `~/.hermes/skills/` |
+| **Skill** (`skills/finance/accountant/`) | the persona + procedure, and `reference/accountant-prompt.md` (the ported system prompt) | its own `scripts/install.sh` |
 
 Hermes manages its own per-turn context and memory; this integration doesn't
 inject either -- the model calls `lookup` / `query` when it needs ledger state,
@@ -62,15 +62,18 @@ That writes `packages/pi-extension/dist/accountant24-mcp.js` (self-contained;
 
 2. **Skill** -- there is no CLI install for a local skill directory (`hermes
    skills install` only takes a registry identifier or an HTTPS URL to a
-   SKILL.md; `hermes skills tap add` only takes a GitHub repo). Copy it in:
+   SKILL.md; `hermes skills tap add` only takes a GitHub repo), so this is a
+   copy into `~/.hermes/skills/finance/accountant/`. The skill carries its own
+   installer:
 
    ```sh
-   mkdir -p ~/.hermes/skills/finance
-   cp -R packages/pi-extension/hermes/skills/finance/accountant ~/.hermes/skills/finance/
+   packages/pi-extension/hermes/skills/finance/accountant/scripts/install.sh
    ```
 
-   This needs a checkout of this repo regardless of where the MCP server came
-   from -- the skill isn't (yet) shipped inside the packaged app.
+   Re-run it after pulling to pick up skill updates -- it overwrites the
+   previous copy. `HERMES_HOME` is honored if you don't use the default
+   `~/.hermes`. This needs a checkout of this repo regardless of where the MCP
+   server came from -- the skill isn't (yet) shipped inside the packaged app.
 
 3. **Workspace** -- if `~/.accountant24` (or your chosen path) doesn't exist,
    the server scaffolds it (dirs, starter journals, empty `memory.md`, git
