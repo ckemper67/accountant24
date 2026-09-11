@@ -41,7 +41,7 @@ describe("addPricesSpec.handler()", () => {
     expect(result.isError).toBeFalsy();
     const body = textOf(result);
     expect(body).toContain("Price saved to");
-    expect(body).toContain("P 2026-03-15 BTC 65000 EUR");
+    expect(body).toContain("P 2026-03-15 BTC 65000.00 EUR");
   });
 
   test("should summarize a multi-price batch", async () => {
