@@ -356,13 +356,17 @@ function quoteCommodity(commodity: string): string {
   return /^[\p{L}\p{Sc}]+$/u.test(commodity) ? commodity : `"${commodity}"`;
 }
 
-/** Plain decimal rendering preserving the given precision — market prices
- *  carry meaning in their decimals (0.0205), so no fixed rounding; tiny
- *  prices must never fall into exponential notation. */
+/** Plain decimal rendering preserving the given precision, padded to at least
+ *  2 decimals so price rows line up — market prices carry meaning beyond 2
+ *  decimals (0.0205), so no rounding, only padding; tiny prices must never
+ *  fall into exponential notation. */
 function formatPriceAmount(amount: number): string {
   const plain = String(amount);
-  if (!plain.toLowerCase().includes("e")) return plain;
-  return amount.toFixed(20).replace(/0+$/, "").replace(/\.$/, "");
+  const exponential = plain.toLowerCase().includes("e");
+  const decimalDigits = exponential
+    ? (amount.toFixed(20).replace(/0+$/, "").replace(/\.$/, "").split(".")[1]?.length ?? 0)
+    : (plain.split(".")[1]?.length ?? 0);
+  return amount.toFixed(Math.max(2, decimalDigits));
 }
 
 function formatPrice(params: AddPriceParams): string {
