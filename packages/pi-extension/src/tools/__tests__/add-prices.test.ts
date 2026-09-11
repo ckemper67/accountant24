@@ -71,5 +71,5 @@ test("reports a numbered list when several prices are saved at once", async () =
   expect(text).toContain("2 prices saved");
   expect(text).toContain("1. ");
   expect(text).toContain("2. ");
-  expect(text).toContain("P 2026-03-15 BTC 55000 EUR");
+  expect(text).toContain("P 2026-03-15 BTC 55000.00 EUR");
 });

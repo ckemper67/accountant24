@@ -237,7 +237,19 @@ describe("addPrices()", () => {
     writeFileSync(join(LEDGER, "main.journal"), "");
     await addPrices([usdPrice, { date: "2026-04-02", commodity: "BTC", price: { amount: 55000, commodity: "EUR" } }]);
     expect(readFileSync(join(LEDGER, "2026", "03.journal"), "utf-8")).toContain("P 2026-03-15 USD 0.87 EUR");
-    expect(readFileSync(join(LEDGER, "2026", "04.journal"), "utf-8")).toContain("P 2026-04-02 BTC 55000 EUR");
+    expect(readFileSync(join(LEDGER, "2026", "04.journal"), "utf-8")).toContain("P 2026-04-02 BTC 55000.00 EUR");
+  });
+
+  test("should pad a whole-number price to 2 decimals so rows line up", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addPrices([{ ...usdPrice, commodity: "BTC", price: { amount: 55000, commodity: "EUR" } }]);
+    expect(result.transactions[0].transactionText).toBe("P 2026-03-15 BTC 55000.00 EUR");
+  });
+
+  test("should pad a single-decimal price to 2 decimals so rows line up", async () => {
+    writeFileSync(join(LEDGER, "main.journal"), "");
+    const result = await addPrices([{ ...usdPrice, price: { amount: 1.5, commodity: "EUR" } }]);
+    expect(result.transactions[0].transactionText).toBe("P 2026-03-15 USD 1.50 EUR");
   });
 
   test("should declare both sides of the price as commodities when missing", async () => {
