@@ -5,6 +5,16 @@ import { fetchYahooDailyCloses, type PriceEntry, type WritePricesResult, writePr
 const Mapping = Type.Object({
   commodity: Type.String({ description: "Ledger commodity symbol as used in transactions, e.g. VTSAX, AAPL" }),
   symbol: Type.String({ description: "Yahoo Finance ticker to fetch, e.g. VTSAX, AAPL, ^GSPC, EURUSD=X" }),
+  scale: Type.Optional(
+    Type.Number({
+      exclusiveMinimum: 0,
+      description:
+        "Multiplier applied to each fetched close before it is written, for a commodity with no direct " +
+        "quote that trades as a fixed multiple of `symbol` (e.g. a share class or a fund-of-fund unit). " +
+        "Omit for a 1:1 quote. Only set this from a precise mark (a unit-quantity trade, a statement's " +
+        "share balance) -- never from a fee-sized or rounded amount.",
+    }),
+  ),
 });
 
 const Params = Type.Object({
@@ -42,7 +52,8 @@ export const fetchPricesTool: ToolDefinition<typeof Params, WritePricesResult> =
   promptSnippet: "Fetch historical stock/fund prices from Yahoo (writes P directives to prices.journal)",
   promptGuidelines: [
     "fetch_prices downloads daily closing prices from Yahoo Finance. Each mapping's `commodity` must exactly match the commodity symbol used in the ledger's transactions; `symbol` is the Yahoo ticker (e.g. AAPL, VTSAX, ^GSPC, EURUSD=X).",
-    "Record any commodity-to-Yahoo-ticker mapping in memory (update_memory) so future price refreshes need no lookup.",
+    "If a commodity has no direct public quote but trades as a fixed multiple of another ticker (a share class, a fund-of-fund unit), fetch that ticker and set `scale` to the multiple instead of guessing a price.",
+    "Record any commodity-to-Yahoo-ticker mapping in memory (update_memory) so future price refreshes need no lookup -- including `scale` when set, the anchor date and mark it was derived from, and that it should be re-derived when a new statement arrives (a share class can change).",
   ],
   parameters: Params,
 
@@ -52,11 +63,15 @@ export const fetchPricesTool: ToolDefinition<typeof Params, WritePricesResult> =
     if (!DATE_RE.test(start)) throw new Error(`Invalid start date: ${start}. Expected YYYY-MM-DD.`);
     if (!DATE_RE.test(end)) throw new Error(`Invalid end date: ${end}. Expected YYYY-MM-DD.`);
     if (end < start) throw new Error(`end (${end}) is before start (${start}).`);
+    for (const { scale } of params.prices) {
+      if (scale != null && !(scale > 0)) throw new Error(`Invalid scale: ${scale}. Must be greater than 0.`);
+    }
 
     const entries: PriceEntry[] = [];
-    for (const { commodity, symbol } of params.prices) {
+    for (const { commodity, symbol, scale } of params.prices) {
       const { currency, points } = await fetchYahooDailyCloses(symbol, start, end, signal);
-      entries.push({ commodity, currency, points });
+      const scaled = scale == null ? points : points.map((p) => ({ ...p, close: p.close * scale }));
+      entries.push({ commodity, currency, points: scaled });
     }
 
     const result = await writePrices(entries, signal);
