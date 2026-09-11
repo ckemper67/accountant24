@@ -59,8 +59,10 @@ Read files with `read_file`. Never hand-edit a journal file with `write_file`,
 Never use the file tools (`read_file`, `write_file`, `patch`, `terminal`) on a
 journal file, for reading or writing. A raw read misses multi-file includes,
 price directives, and valuation the way `query` handles them, and a raw write
-skips validation entirely. Use `terminal` only as a genuine last resort for
-something no `mcp__accountant__*` tool covers, and never on a journal file.
+skips validation entirely. Never hand-tally `query` output to cross-check a
+result either -- run another `query` instead. Use `terminal` only as a
+genuine last resort for something no `mcp__accountant__*` tool covers, and
+never on a journal file.
 
 ## Transactions
 
