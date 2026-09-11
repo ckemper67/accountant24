@@ -151,6 +151,46 @@ describe("fetchPricesTool.execute()", () => {
     ).rejects.toThrow("before start");
   });
 
+  test("should scale each fetched close by the mapping's scale factor before writing", async () => {
+    writeFileSync(join(LEDGER, "commodities.journal"), "; Commodity declarations\ncommodity FUND_CLASS_R\n");
+    mockFetchBySymbol({ PROXYX: bodyFor(43.24) });
+
+    const result = await run({
+      prices: [{ commodity: "FUND_CLASS_R", symbol: "PROXYX", scale: 1.83917 }],
+      start: "2026-01-01",
+      end: "2026-01-03",
+    });
+
+    expect(result.details?.pricesAdded).toBe(1);
+    const prices = readFileSync(join(LEDGER, "prices.journal"), "utf-8");
+    expect(prices).toContain("P 2026-01-02 FUND_CLASS_R 79.5257 USD");
+  });
+
+  test("should write the fetched close unscaled when scale is omitted", async () => {
+    mockFetchBySymbol({ AAPL: bodyFor(150.25) });
+
+    await run({ prices: [{ commodity: "AAPL", symbol: "AAPL" }], start: "2026-01-01", end: "2026-01-03" });
+
+    const prices = readFileSync(join(LEDGER, "prices.journal"), "utf-8");
+    expect(prices).toContain("P 2026-01-02 AAPL 150.25 USD");
+  });
+
+  test("should reject a non-positive scale before any fetch", async () => {
+    const fn = mockFetchBySymbol({ AAPL: bodyFor(150) });
+    await expect(
+      run({ prices: [{ commodity: "AAPL", symbol: "AAPL", scale: 0 }], start: "2026-01-01" }),
+    ).rejects.toThrow("Invalid scale");
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  test("should reject a negative scale before any fetch", async () => {
+    const fn = mockFetchBySymbol({ AAPL: bodyFor(150) });
+    await expect(
+      run({ prices: [{ commodity: "AAPL", symbol: "AAPL", scale: -1 }], start: "2026-01-01" }),
+    ).rejects.toThrow("Invalid scale");
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   test("should propagate a Yahoo fetch error", async () => {
     mockFetchBySymbol({
       AAPL: { chart: { result: null, error: { code: "Not Found", description: "delisted" } } },
