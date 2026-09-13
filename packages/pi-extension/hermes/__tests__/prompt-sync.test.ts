@@ -21,7 +21,7 @@ import { describe, expect, test } from "vitest";
 // packages/pi-extension/src/system-prompt/system.md), update
 // accountant-prompt.md to match, then update EXPECTED_SHA below to the value
 // this test prints.
-const EXPECTED_SHA = "9c1f05be5b7b";
+const EXPECTED_SHA = "257cf4aee6df";
 
 const SYSTEM_MD = join(import.meta.dirname, "..", "..", "src", "system-prompt", "system.md");
 
