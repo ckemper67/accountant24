@@ -583,7 +583,7 @@ async function importStatementRows(
   };
 
   if (core.dry_run) {
-    return { ...base, imported: 0, dryRun: true };
+    return { ...base, imported: newCount, dryRun: true };
   }
 
   if (newCount === 0) {

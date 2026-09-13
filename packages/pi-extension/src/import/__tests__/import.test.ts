@@ -129,7 +129,7 @@ describe("runImport() dry_run", () => {
 
     expect(result.dryRun).toBe(true);
     expect(result.parsed).toBe(3);
-    expect(result.imported).toBe(0);
+    expect(result.imported).toBe(3); // all 3 rows are new; dry_run must report that, not write it
     expect(result.skipped).toBe(0);
 
     // No monthly journal files should be written.

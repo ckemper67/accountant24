@@ -79,7 +79,9 @@ const PROMPT_SNIPPET =
   "Bulk-import a CSV bank export (auto-detects encoding, number format, date order; deduplicates on re-import)";
 
 const PROMPT_GUIDELINES = [
-  "import_transactions reads a CSV, OFX/QFX/QBO, or QIF file by path. For PDF or image statements, use extract_text then import_extracted_transactions instead.",
+  "import_transactions reads a CSV, OFX/QFX/QBO, or QIF file by path. For PDF or image statements, use extract_text " +
+    "then import_extracted_transactions instead -- or, for a long statement, extract_text then write the rows to a " +
+    "CSV (via the write tool, every field double-quoted) and import that file here in one call.",
   "Run with dry_run:true before the real import to confirm parsed counts, detected formats, and a sample.",
   UNCATEGORIZED_ACCOUNTS_GUIDELINE,
   RECATEGORIZE_GUIDELINE,

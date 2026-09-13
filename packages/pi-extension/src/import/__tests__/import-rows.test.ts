@@ -60,9 +60,14 @@ describe("runRowImport() dry_run", () => {
     const result = await runRowImport({ account: ACCOUNT, rows: US_ROWS, currency: "USD", ...BUCKETS, dry_run: true });
     expect(result.dryRun).toBe(true);
     expect(result.parsed).toBe(3);
-    expect(result.imported).toBe(0);
+    expect(result.imported).toBe(3); // all 3 rows are new; dry_run must report that, not write it
     expect(result.encoding).toBe("inline");
     expect(result.sample.some((s) => s.includes("Whole Foods"))).toBe(true);
+  });
+
+  test("should not write anything to the ledger", async () => {
+    await runRowImport({ account: ACCOUNT, rows: US_ROWS, currency: "USD", ...BUCKETS, dry_run: true });
+    expect(vi.mocked(spawnText)).not.toHaveBeenCalledWith(expect.arrayContaining(["add"]), expect.anything());
   });
 });
 
