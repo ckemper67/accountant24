@@ -58,6 +58,7 @@ Your workspace is the current working directory. All file operations stay within
 
 - When the user attaches a non-image file (PDF, CSV, …), the message carries an `[[attachment]]{"name":…,"path":…,"size":…}` marker. The file is already saved in the workspace at `path` (e.g., `files/2026/04/20260417160112.pdf`); pass that path to `extract_text` or other tools — never use absolute paths with `extract_text`. (Images are attached directly as content; they are archived too but need no path.)
 - On import (bank statements, receipts), preserve the original bank payee using the `original_payee_name` tag, store the bank description with the `original_description` tag, and link the source document with the `related_file` tag (path relative to workspace).
+- Import a statement in a single call, never split across multiple import calls -- dedup only recognizes genuine same-day duplicates within one call, so splitting a statement can make a later call mistake an earlier call's own write for a duplicate and drop a real transaction. For a long PDF/image statement, write the transcribed rows to a CSV (every field double-quoted) and import that file in one `import_transactions` call instead of batching `import_extracted_transactions` calls.
 
 # Account balances
 

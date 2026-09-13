@@ -22,6 +22,14 @@
 //   row order, because the SET of (fingerprint, ordinal) ids is order-independent for a
 //   fixed multiset.
 //
+//   This guarantee requires the full set of same-fingerprint rows to be reconciled together
+//   in one reconcile() call. Splitting one statement's rows across multiple import calls
+//   (e.g. paging a long PDF through several import_extracted_transactions calls) breaks it:
+//   each call's ordinal counter starts fresh at 0, so a later call can compute the same
+//   import_id an earlier call just wrote and mistake a genuine second transaction for
+//   "already imported." Callers must submit a whole statement in one call -- see the
+//   import_transactions/import_extracted_transactions prompt guidelines.
+//
 // Fallback for untagged transactions:
 //   Transactions written before this tool existed (or entered by hand, or transcribed
 //   without going through the importer) carry no import_id tag. loadExistingImportIds

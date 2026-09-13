@@ -66,7 +66,16 @@ const PROMPT_SNIPPET =
 
 const PROMPT_GUIDELINES = [
   "Use this for PDF or image statements: call extract_text first, read the transactions, then pass them here as rows.",
-  "For a long statement, import in page-sized batches rather than one huge call; dedup is keyed on (account, date, amount) so re-runs and overlaps are safe -- overlapping rows are skipped, never double-written.",
+  "Pass ALL of a statement's rows in ONE call -- never split a statement across multiple calls to this tool. Dedup " +
+    "assigns each same-day, same-amount duplicate a distinct slot only among rows seen together in one call; " +
+    "splitting them across calls makes a later call see an earlier call's own write as 'already imported' and " +
+    "wrongly drop a genuine second transaction.",
+  "For a LONG statement that will not fit in one call: instead of calling this tool repeatedly, write the " +
+    "transcribed rows to a CSV file (via the write tool) and import that file in one call with import_transactions " +
+    "-- it parses the whole file in a single pass, so it isn't exposed to the cross-call dedup issue above. When " +
+    "writing the CSV, double-quote every field unconditionally (date, amount, description, payee), even if it " +
+    "looks like it doesn't need it -- an unquoted amount using a comma decimal separator (e.g. 1.234,56) would " +
+    "otherwise split into two CSV columns and silently corrupt the amount.",
   "Transcribe dates, amounts, AND descriptions VERBATIM -- do not reformat, convert to ISO, reword, or change decimal/thousands separators. The tool parses locale formats deterministically; if the auto-detect looks wrong in dry_run, pass number_format/date_format instead of editing the values.",
   "With only a few rows, auto-detection may be ambiguous -- pass number_format and date_format explicitly.",
   "Run with dry_run:true first to confirm parsed counts, detected formats, and a sample.",
